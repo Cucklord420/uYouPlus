@@ -1,0 +1,35 @@
+name: Source validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Validate build shell syntax
+        run: bash -n build.sh
+
+      - name: Check Theos project and submodule manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s Makefile
+          test -s control
+          test -s uYouPlus.plist
+          test -s .gitmodules
+          test -d Sources
+          git config -f .gitmodules --get-regexp '^submodule\..*\.url$' > /dev/null
+          echo 'Source layout, shell syntax, and submodule manifest validated.'
