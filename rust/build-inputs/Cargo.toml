@@ -1,0 +1,10 @@
+[package]
+name = "uyouplus-inputs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+
+[dependencies]
+regex = "1"
+url = "2"
