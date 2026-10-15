@@ -16,6 +16,11 @@ on:
         default: ""
         required: true
         type: string
+      decrypted_youtube_sha256:
+        description: "SHA-256 of the supplied decrypted IPA (required before extraction)"
+        default: ""
+        required: true
+        type: string
       bundle_id:
         description: "Modify the bundle ID. Not recommended"
         default: "com.google.ios.youtube"
@@ -28,7 +33,7 @@ on:
         type: string
       create_release:
         description: "Create a draft release"
-        default: true
+        default: false
         required: false
         type: boolean
       upload_artifact:
@@ -41,23 +46,51 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
+  validate-inputs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout input validator
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Run IPA validation unit tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Validate operator-supplied build settings
+        env:
+          IPA_URL: ${{ inputs.decrypted_youtube_url }}
+          IPA_SHA256: ${{ inputs.decrypted_youtube_sha256 }}
+          UYOU_VERSION: ${{ inputs.uyou_version }}
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+          APP_NAME: ${{ inputs.app_name }}
+        run: |
+          python3 scripts/build_checks.py inputs --url "$IPA_URL" --sha256 "$IPA_SHA256" --version "$UYOU_VERSION" --bundle "$BUNDLE_ID" --app "$APP_NAME"
+
   build:
+    needs: validate-inputs
+    timeout-minutes: 60
+    outputs:
+      youtube_version: ${{ steps.prepare_youtube.outputs.youtube_version }}
     name: Build uYouPlus
     runs-on: macos-15
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout Main
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           path: main
           submodules: recursive
+          persist-credentials: false
 
       - name: Caching brew dependencies
         id: brew_cache
-        uses: tecolicom/actions-use-homebrew-tools@v1.2
+        uses: tecolicom/actions-use-homebrew-tools@9e4ec20e4a75bd2fe18e49c9f339a16644d2be2f # v1.2
         with:
           tools: ldid dpkg make
           cache: yes
@@ -70,39 +103,52 @@ jobs:
         run: echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH 
 
       - name: Setup Theos
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: theos/theos
-          ref: master
+          ref: 304e0799973e8145f32e4ca2de6c747a84b758ce
           path: theos
           submodules: recursive
+          persist-credentials: false
       
       - name: Caching SDK
         id: SDK
-        uses: actions/cache@v4.0.0
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         env:
-          cache-name: iOS-16.5-SDK
+          cache-name: iOS-16.5-SDK-0222fd5413cf4b9af096f37b4621afa2688572f7
         with:
           path: theos/sdks/
           key: ${{ env.cache-name }}
       
-      - name: Download iOS 16.5 SDK
+      - name: Fetch pinned iOS 16.5 SDK
         if: steps.SDK.outputs.cache-hit != 'true'
-        run: |
-          git clone -n --depth=1 --filter=tree:0 https://github.com/theos/sdks.git && cd sdks
-          git sparse-checkout set --no-cone iPhoneOS16.5.sdk
-          git checkout
-          mv *.sdk $THEOS/sdks
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: theos/sdks
+          ref: 0222fd5413cf4b9af096f37b4621afa2688572f7
+          path: sdk-download
+          sparse-checkout: iPhoneOS16.5.sdk
+          persist-credentials: false
+
+      - name: Install pinned SDK
+        if: steps.SDK.outputs.cache-hit != 'true'
         env:
           THEOS: ${{ github.workspace }}/theos
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d sdk-download/iPhoneOS16.5.sdk
+          mkdir -p "$THEOS/sdks"
+          cp -R sdk-download/iPhoneOS16.5.sdk "$THEOS/sdks/"
 
       - name: Setup Theos Jailed
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: qnblackcat/theos-jailed
-          ref: master
+          ref: 662fd704aed27b8956bcfe52a35e2b676921ab42
           path: theos-jailed
           submodules: recursive
+          persist-credentials: false
 
       - name: Install Theos Jailed
         run: |
@@ -110,31 +156,34 @@ jobs:
         env:
           THEOS: ${{ github.workspace }}/theos
 
-      - name: Prepare YouTube iPA
+      - name: Prepare YouTube IPA (hash + ZIP validation)
         id: prepare_youtube
-        run: |
-          wget "$YOUTUBE_URL" --no-verbose -O main/YouTube.ipa
-          cd ${{ github.workspace }}/main
-          mv YouTube.ipa YouTube.zip
-          unzip -q YouTube.zip
-          youtube_version=$(defaults read "$(pwd)/Payload/YouTube.app/Info" CFBundleVersion)
-          echo "==> YouTube v$youtube_version downloaded!"
-          sed -i '' "17s#.*#YOUTUBE_VERSION = ${youtube_version}#g" Makefile
-          echo "youtube_version=${youtube_version}" >> $GITHUB_OUTPUT
-
+        shell: bash
         env:
-          THEOS: ${{ github.workspace }}/theos
           YOUTUBE_URL: ${{ inputs.decrypted_youtube_url }}
+          IPA_SHA256: ${{ inputs.decrypted_youtube_sha256 }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' --retry 2 --max-time 600 --output main/YouTube.ipa "$YOUTUBE_URL"
+          youtube_version=$(python3 main/scripts/build_checks.py ipa --file main/YouTube.ipa --sha256 "$IPA_SHA256")
+          unzip -q main/YouTube.ipa -d main
+          cd main
+          sed -i '' "s#^YOUTUBE_VERSION = .*#YOUTUBE_VERSION = $youtube_version#" Makefile
+          echo "youtube_version=$youtube_version" >> "$GITHUB_OUTPUT"
 
       - name: Fix compiling & Build Package
         id: build_package
         run: |
+          set -euo pipefail
           mkdir -p theos/lib/iphone/rootless
           cd ${{ github.workspace }}/main
           sed -i '' "s#^BUNDLE_ID = .*#BUNDLE_ID = $BUNDLE_ID#" Makefile
           sed -i '' "s#^DISPLAY_NAME = .*#DISPLAY_NAME = $APP_NAME#" Makefile          
           make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
-          echo "package=$(ls -t packages | head -n1)" >>$GITHUB_OUTPUT
+          shopt -s nullglob
+          packages=(packages/*.ipa)
+          test "${#packages[@]}" -eq 1 || { echo 'Expected exactly one built IPA'; exit 1; }
+          echo "package=${packages[0]#packages/}" >> "$GITHUB_OUTPUT"
           echo -e "==> \033[1mSHASUM256: $(shasum -a 256 packages/*.ipa | cut -f1 -d' ')\033[0m"
           echo -e "==> \033[1mBundle ID: $BUNDLE_ID\033[0m"
 
@@ -145,8 +194,8 @@ jobs:
           APP_NAME: ${{ inputs.app_name }}
 
       - name: Upload Artifact
-        if: ${{ inputs.upload_artifact }}
-        uses: actions/upload-artifact@v4.3.0
+        if: ${{ inputs.upload_artifact || inputs.create_release }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         env:
           UYOU_VERSION: ${{ inputs.uyou_version }}
           YOUTUBE_VERSION: ${{ steps.prepare_youtube.outputs.youtube_version }}
@@ -155,17 +204,31 @@ jobs:
           path: ${{ github.workspace }}/main/packages/${{ steps.build_package.outputs.package }}
           if-no-files-found: error
 
-      - name: Create Release
-        if: ${{ inputs.create_release }}
-        id: create_release
-        uses: qnblackcat/action-gh-release@master
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UYOU_VERSION: ${{ inputs.uyou_version }}
-          YOUTUBE_VERSION: ${{ steps.prepare_youtube.outputs.youtube_version }}
-          DRAFT: ${{ inputs.create_release }}
+  publish:
+    name: Draft release (write token isolated from build)
+    if: ${{ inputs.create_release }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download the built IPA
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          tag_name: v${{ env.YOUTUBE_VERSION }}-${{ env.UYOU_VERSION }}-(${{ github.run_number }})
-          name: v${{ env.YOUTUBE_VERSION }}-${{ env.UYOU_VERSION }}-(${{ github.run_number }})
-          files: main/packages/*.ipa
-          draft: ${{ env.DRAFT }}
+          name: uYouPlus_${{ needs.build.outputs.youtube_version }}_${{ inputs.uyou_version }}
+          path: staging
+      - name: Create draft release only when explicitly requested
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          YOUTUBE_VERSION: ${{ needs.build.outputs.youtube_version }}
+          UYOU_VERSION: ${{ inputs.uyou_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          packages=(staging/*.ipa)
+          test "${#packages[@]}" -eq 1 || { echo 'Expected one staged IPA'; exit 1; }
+          tag="v${YOUTUBE_VERSION}-${UYOU_VERSION}-(${GITHUB_RUN_NUMBER})"
+          gh release create "$tag" "${packages[0]}" --repo "$GH_REPO" --draft --title "$tag" --notes 'Manual draft release; verify third-party redistribution rights before publishing.'

@@ -19,6 +19,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Run 37 offline input and workflow security regressions
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
       - name: Validate build shell syntax
         run: bash -n build.sh
 
