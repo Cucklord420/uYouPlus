@@ -37,7 +37,7 @@ class BuildWorkflowSafetyTests(unittest.TestCase):
         self.assertRegex(WORKFLOW, r"repository: theos/theos\n\s+ref: [0-9a-f]{40}")
         self.assertRegex(WORKFLOW, r"repository: qnblackcat/theos-jailed\n\s+ref: [0-9a-f]{40}")
     def test_09b_sdk_is_pinned_to_immutable_commit(self):
-        self.assertRegex(WORKFLOW, r"repository: theos/sdks\\n\\s+ref: [0-9a-f]{40}")
+        self.assertRegex(WORKFLOW, r"repository: theos/sdks\n\s+ref: [0-9a-f]{40}")
         self.assertNotIn("git clone -n --depth=1", WORKFLOW)
 
     def test_10_publisher_uses_no_checkout(self):
