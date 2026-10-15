@@ -115,20 +115,31 @@ jobs:
         id: SDK
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         env:
-          cache-name: iOS-16.5-SDK
+          cache-name: iOS-16.5-SDK-0222fd5413cf4b9af096f37b4621afa2688572f7
         with:
           path: theos/sdks/
           key: ${{ env.cache-name }}
       
-      - name: Download iOS 16.5 SDK
+      - name: Fetch pinned iOS 16.5 SDK
         if: steps.SDK.outputs.cache-hit != 'true'
-        run: |
-          git clone -n --depth=1 --filter=tree:0 https://github.com/theos/sdks.git && cd sdks
-          git sparse-checkout set --no-cone iPhoneOS16.5.sdk
-          git checkout
-          mv *.sdk $THEOS/sdks
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: theos/sdks
+          ref: 0222fd5413cf4b9af096f37b4621afa2688572f7
+          path: sdk-download
+          sparse-checkout: iPhoneOS16.5.sdk
+          persist-credentials: false
+
+      - name: Install pinned SDK
+        if: steps.SDK.outputs.cache-hit != 'true'
         env:
           THEOS: ${{ github.workspace }}/theos
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d sdk-download/iPhoneOS16.5.sdk
+          mkdir -p "$THEOS/sdks"
+          cp -R sdk-download/iPhoneOS16.5.sdk "$THEOS/sdks/"
 
       - name: Setup Theos Jailed
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
