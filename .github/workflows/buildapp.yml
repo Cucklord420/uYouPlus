@@ -167,8 +167,7 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' --retry 2 --max-time 600 --output main/YouTube.ipa "$YOUTUBE_URL"
-          youtube_version=$(cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- ipa --file main/YouTube.ipa --sha256 "$IPA_SHA256"
-          python3 main/scripts/build_checks.py ipa --file main/YouTube.ipa --sha256 "$IPA_SHA256")
+          youtube_version=$(cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- ipa --file main/YouTube.ipa --sha256 "$IPA_SHA256")
           unzip -q main/YouTube.ipa -d main
           cd main
           sed -i '' "s#^YOUTUBE_VERSION = .*#YOUTUBE_VERSION = $youtube_version#" Makefile
