@@ -60,6 +60,8 @@ jobs:
           persist-credentials: false
       - name: Run IPA validation unit tests
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Test Rust input validation against original Python cases
+        run: cargo test --manifest-path rust/build-inputs/Cargo.toml
       - name: Validate operator-supplied build settings
         env:
           IPA_URL: ${{ inputs.decrypted_youtube_url }}
@@ -68,7 +70,7 @@ jobs:
           BUNDLE_ID: ${{ inputs.bundle_id }}
           APP_NAME: ${{ inputs.app_name }}
         run: |
-          python3 scripts/build_checks.py inputs --url "$IPA_URL" --sha256 "$IPA_SHA256" --version "$UYOU_VERSION" --bundle "$BUNDLE_ID" --app "$APP_NAME"
+          cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml -- inputs --url "$IPA_URL" --sha256 "$IPA_SHA256" --version "$UYOU_VERSION" --bundle "$BUNDLE_ID" --app "$APP_NAME"
 
   build:
     needs: validate-inputs
