@@ -60,6 +60,8 @@ jobs:
           persist-credentials: false
       - name: Run IPA validation unit tests
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Test Rust input validation against original Python cases
+        run: cargo test --manifest-path rust/build-inputs/Cargo.toml
       - name: Validate operator-supplied build settings
         env:
           IPA_URL: ${{ inputs.decrypted_youtube_url }}
@@ -68,7 +70,7 @@ jobs:
           BUNDLE_ID: ${{ inputs.bundle_id }}
           APP_NAME: ${{ inputs.app_name }}
         run: |
-          python3 scripts/build_checks.py inputs --url "$IPA_URL" --sha256 "$IPA_SHA256" --version "$UYOU_VERSION" --bundle "$BUNDLE_ID" --app "$APP_NAME"
+          cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml -- inputs --url "$IPA_URL" --sha256 "$IPA_SHA256" --version "$UYOU_VERSION" --bundle "$BUNDLE_ID" --app "$APP_NAME"
 
   build:
     needs: validate-inputs
@@ -165,7 +167,7 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' --retry 2 --max-time 600 --output main/YouTube.ipa "$YOUTUBE_URL"
-          youtube_version=$(python3 main/scripts/build_checks.py ipa --file main/YouTube.ipa --sha256 "$IPA_SHA256")
+          youtube_version=$(cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- ipa --file main/YouTube.ipa --sha256 "$IPA_SHA256")
           unzip -q main/YouTube.ipa -d main
           cd main
           sed -i '' "s#^YOUTUBE_VERSION = .*#YOUTUBE_VERSION = $youtube_version#" Makefile
