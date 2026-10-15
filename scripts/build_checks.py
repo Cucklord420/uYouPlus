@@ -79,7 +79,7 @@ def verify_ipa(path: Path, expected_sha256: str) -> str:
                 or ".." in segments or ":" in segments[0]
             ):
                 raise ValueError("Unsafe IPA archive entry path")
-            if (entry.external_attr >> 16) & stat.S_IFMT(stat.S_IFMT(0o170000)) == stat.S_IFLNK:
+            if stat.S_IFMT(entry.external_attr >> 16) == stat.S_IFLNK:
                 raise ValueError("IPA contains a symbolic link")
             key = name.rstrip("/")
             if key in seen:
