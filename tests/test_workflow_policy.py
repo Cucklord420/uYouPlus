@@ -10,7 +10,7 @@ class BuildWorkflowSafetyTests(unittest.TestCase):
         self.assertIn("  workflow_dispatch:", WORKFLOW)
         self.assertNotIn("  pull_request_target:", WORKFLOW)
     def test_02_opt_in_release(self):
-        self.assertIn('if: \${{ inputs.create_release }}', WORKFLOW)
+        self.assertIn('if: ${{ inputs.create_release }}', WORKFLOW)
         self.assertIn("        default: false", WORKFLOW)
     def test_03_required_checksum(self):
         self.assertIn("decrypted_youtube_sha256:", WORKFLOW)
