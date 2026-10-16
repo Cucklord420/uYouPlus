@@ -26,6 +26,21 @@ fn validate(url: &str, digest: &str, version: &str, bundle: &str, app: &str) -> 
     if url.chars().any(|ch| ch.is_ascii_control() || ch == ' ' || ch.is_ascii_whitespace()) {
         return Err("URL contains spaces or control characters");
     }
+    // The URL parser canonicalizes percent-encoded and internationalized hostnames.
+    // Check the raw authority first so rejected Python inputs cannot become
+    // apparently valid public DNS names through that normalization.
+    let (_, after_scheme) = url.split_once("://").ok_or("Invalid IPA URL")?;
+    let raw_authority = after_scheme
+        .split(&['/', '?', '#'][..])
+        .next()
+        .unwrap_or("");
+    if raw_authority.is_empty()
+        || raw_authority
+            .chars()
+            .any(|ch| !ch.is_ascii() || ch == '%' || ch == '\\')
+    {
+        return Err("Invalid public DNS hostname");
+    }
     let parsed = Url::parse(url).map_err(|_| "Invalid IPA URL")?;
     if parsed.scheme() != "https" || parsed.host().is_none()
         || !parsed.username().is_empty() || parsed.password().is_some()
@@ -161,6 +176,40 @@ mod tests {
                 .output().expect("Python comparator");
             assert_eq!(rust_ok,original.status.success(),"Different behavior for {url}");
         }
+    }
+
+    #[test]
+    fn rejects_host_normalization_that_original_python_rejects() {
+        let sha = "f".repeat(64);
+        let python = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/build_checks.py");
+        for url in [
+            "https://ex%61mple.org/test.ipa",
+            "https://bücher.example.org/test.ipa",
+            "https://exa\\mple.org/test.ipa",
+            "https:downloads.example.org/test.ipa",
+        ] {
+            assert!(
+                validate(url, &sha, "3.0.3", "com.google.ios.youtube", "YouTube").is_err(),
+                "Rust accepted {url}"
+            );
+            let original = Command::new("python3")
+                .arg(&python)
+                .args([
+                    "inputs", "--url", url, "--sha256", &sha, "--version", "3.0.3",
+                    "--bundle", "com.google.ios.youtube", "--app", "YouTube",
+                ])
+                .output()
+                .expect("Original Python validator");
+            assert!(
+                !original.status.success(),
+                "Original Python accepted {url}"
+            );
+        }
+        assert!(validate(
+            "https://downloads.example.org/%66ile.ipa?token=abc",
+            &sha, "3.0.3", "com.google.ios.youtube", "YouTube"
+        ).is_ok());
     }
 
     #[test]
