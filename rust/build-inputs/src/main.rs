@@ -44,7 +44,7 @@ fn validate(url: &str, digest: &str, version: &str, bundle: &str, app: &str) -> 
     let parsed = Url::parse(url).map_err(|_| "Invalid IPA URL")?;
     if parsed.scheme() != "https" || parsed.host().is_none()
         || !parsed.username().is_empty() || parsed.password().is_some()
-        || parsed.fragment().is_some()
+        || parsed.fragment().is_some_and(|fragment| !fragment.is_empty())
     {
         return Err("IPA URL must use HTTPS without credentials or fragments");
     }
@@ -166,6 +166,8 @@ mod tests {
             "https://downloads.example.org/a.ipa#fragment",
             "https://downloads.example.org/",
             "https://downloads.example.org/a.ipa?token=abc",
+            "https://downloads.example.org/a.ipa#",
+            "https://downloads.example.org/a.ipa#fragment",
         ];
         for url in cases {
             let rust_ok = validate(url,&sha,"3.0.3","com.google.ios.youtube","YouTube").is_ok();
