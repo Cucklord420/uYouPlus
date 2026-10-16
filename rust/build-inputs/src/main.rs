@@ -41,6 +41,17 @@ fn validate(url: &str, digest: &str, version: &str, bundle: &str, app: &str) -> 
     {
         return Err("Invalid public DNS hostname");
     }
+    // Python urlsplit() checks the original path. Url::parse normalizes
+    // terminal /./ and /../ to a directory path, changing its validation.
+    // Preserve the original raw-path check for one-to-one input parity.
+    let path_and_suffix = &after_scheme[raw_authority.len()..];
+    let raw_path = path_and_suffix
+        .split(&['?', '#'][..])
+        .next()
+        .unwrap_or("");
+    if raw_path.is_empty() || raw_path.ends_with('/') {
+        return Err("IPA URL must point to a file");
+    }
     let parsed = Url::parse(url).map_err(|_| "Invalid IPA URL")?;
     if parsed.scheme() != "https" || parsed.host().is_none()
         || !parsed.username().is_empty() || parsed.password().is_some()
@@ -67,9 +78,6 @@ fn validate(url: &str, digest: &str, version: &str, bundle: &str, app: &str) -> 
         || hostname.split('.').any(|part| !valid(label, part))
     {
         return Err("Invalid public DNS hostname");
-    }
-    if parsed.path().is_empty() || parsed.path().ends_with('/') {
-        return Err("IPA URL must point to a file");
     }
     Ok(())
 }
@@ -168,6 +176,10 @@ mod tests {
             "https://downloads.example.org/a.ipa?token=abc",
             "https://downloads.example.org/a.ipa#",
             "https://downloads.example.org/a.ipa#fragment",
+            "https://downloads.example.org/a/.",
+            "https://downloads.example.org/a/..",
+            "https://downloads.example.org/.",
+            "https://downloads.example.org/a/../",
         ];
         for url in cases {
             let rust_ok = validate(url,&sha,"3.0.3","com.google.ios.youtube","YouTube").is_ok();
@@ -178,6 +190,28 @@ mod tests {
                 .output().expect("Python comparator");
             assert_eq!(rust_ok,original.status.success(),"Different behavior for {url}");
         }
+    }
+
+    #[test]
+    fn terminal_dot_paths_match_the_original_urlsplit_validator() {
+        let hash = "f".repeat(64);
+        for url in [
+            "https://downloads.example.org/a/.",
+            "https://downloads.example.org/a/..",
+            "https://downloads.example.org/.",
+        ] {
+            assert!(
+                validate(url, &hash, "3.0.3", "com.google.ios.youtube", "YouTube").is_ok(),
+                "Python accepts this nonempty raw path: {url}"
+            );
+        }
+        assert!(validate(
+            "https://downloads.example.org/a/../",
+            &hash,
+            "3.0.3",
+            "com.google.ios.youtube",
+            "YouTube"
+        ).is_err());
     }
 
     #[test]
