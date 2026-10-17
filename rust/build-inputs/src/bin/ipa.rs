@@ -118,7 +118,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::process::Command;
-    use zip::{write::FileOptions, CompressionMethod, ZipWriter};
+    use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
     const PLIST:&str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -129,15 +129,34 @@ mod tests {
         let path=directory.path().join("fixture.ipa");
         let file=File::create(&path).unwrap();
         let mut writer=ZipWriter::new(file);
-        let options=FileOptions::default().compression_method(CompressionMethod::Deflated);
+        let options=SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         writer.start_file("Payload/YouTube.app/Info.plist",options).unwrap();
         writer.write_all(PLIST.as_bytes()).unwrap();
+        // zip 8 refuses duplicate names during writing. Build a distinct, same-length
+        // fixture name and then restore the duplicate in both ZIP filename records.
+        // This keeps the malformed-archive regression independent of ZipWriter policy.
+        const NAME: &str = "Payload/YouTube.app/Info.plist";
+        const ALIAS: &str = "Payload/YouTube.app/Info.plisX";
+        let duplicate = extra.iter().filter(|(name, _)| *name == NAME).count();
+        assert!(duplicate <= 1);
         for (name,data) in extra {
-            writer.start_file(*name,options).unwrap();
+            let fixture_name = if *name == NAME { ALIAS } else { name };
+            writer.start_file(fixture_name,options).unwrap();
             writer.write_all(data).unwrap();
         }
         writer.finish().unwrap();
-        let contents=std::fs::read(&path).unwrap();
+        let mut contents=std::fs::read(&path).unwrap();
+        if duplicate == 1 {
+            let positions: Vec<usize> = contents.windows(ALIAS.len())
+                .enumerate()
+                .filter_map(|(position, bytes)| (bytes == ALIAS.as_bytes()).then_some(position))
+                .collect();
+            assert_eq!(positions.len(), 2, "fixture ZIP local and central filenames");
+            for position in positions {
+                contents[position..position + NAME.len()].copy_from_slice(NAME.as_bytes());
+            }
+            std::fs::write(&path, &contents).unwrap();
+        }
         (directory,format!("{:x}",Sha256::digest(&contents)))
     }
 
