@@ -118,7 +118,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::process::Command;
-    use zip::{write::FileOptions, CompressionMethod, ZipWriter};
+    use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
     const PLIST:&str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -129,7 +129,7 @@ mod tests {
         let path=directory.path().join("fixture.ipa");
         let file=File::create(&path).unwrap();
         let mut writer=ZipWriter::new(file);
-        let options=FileOptions::default().compression_method(CompressionMethod::Deflated);
+        let options=SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         writer.start_file("Payload/YouTube.app/Info.plist",options).unwrap();
         writer.write_all(PLIST.as_bytes()).unwrap();
         for (name,data) in extra {
