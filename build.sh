@@ -25,13 +25,15 @@ if [ -z "$PATHTOYT" ]; then
 fi
 
 make package THEOS_PACKAGE_SCHEME=rootless IPA="$PATHTOYT" FINALPACKAGE=1
+build_status=$?
 
 # SHASUM
-if [[ $? -eq 0 ]]; then
+if [[ $build_status -eq 0 ]]; then
   open packages
   echo "SHASUM256: $(shasum -a 256 packages/*.ipa)"
 
 else
   echo "Failed building uYouPlus"
+  exit "$build_status"
 
 fi
