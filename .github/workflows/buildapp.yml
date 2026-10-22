@@ -21,6 +21,11 @@ on:
         default: ""
         required: true
         type: string
+      uyou_deb_sha256:
+        description: "Independently reviewed SHA-256 of the uYou .deb (required before extraction)"
+        default: ""
+        required: true
+        type: string
       bundle_id:
         description: "Modify the bundle ID. Not recommended"
         default: "com.google.ios.youtube"
@@ -62,6 +67,10 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Test Rust input validation against original Python cases
         run: cargo test --manifest-path rust/build-inputs/Cargo.toml
+      - name: Reject missing or invalid uYou .deb checksum before build
+        env:
+          UYOU_DEB_SHA256: ${{ inputs.uyou_deb_sha256 }}
+        run: python3 scripts/verify_uyou_deb.py --check-only --sha256 "$UYOU_DEB_SHA256"
       - name: Validate operator-supplied build settings
         env:
           IPA_URL: ${{ inputs.decrypted_youtube_url }}
@@ -194,6 +203,7 @@ jobs:
           UYOU_VERSION: ${{ inputs.uyou_version }}
           BUNDLE_ID: ${{ inputs.bundle_id }}
           APP_NAME: ${{ inputs.app_name }}
+          UYOU_DEB_SHA256: ${{ inputs.uyou_deb_sha256 }}
 
       - name: Upload Artifact
         if: ${{ inputs.upload_artifact || inputs.create_release }}
