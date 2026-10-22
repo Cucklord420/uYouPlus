@@ -48,6 +48,22 @@ fn verify(path: &Path, expected: &str) -> Result<String, String> {
         if member.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
             return Err("IPA contains a symbolic link".into());
         }
+        if member.unix_mode().is_some_and(|mode| {
+            let kind = mode & 0o170000;
+            kind != 0 && kind != 0o100000 && kind != 0o040000
+        }) {
+            return Err("IPA contains a special file".into());
+        }
+        // The workflow only needs the app bundle. Permit two known historical
+        // root metadata files but never arbitrary checkout-relative paths.
+        let allowed = name == "Payload/"
+            || name == "Payload/YouTube.app/"
+            || name.starts_with("Payload/YouTube.app/")
+            || (matches!(name.as_str(), "iTunesMetadata.plist" | "iTunesArtwork")
+                && !member.is_dir());
+        if !allowed {
+            return Err("IPA contains an unapproved archive member".into());
+        }
         let logical=name.trim_end_matches('/');
         if !seen.insert(logical.to_owned()) {
             return Err("Duplicate IPA archive entry".into());
@@ -178,6 +194,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unexpected_ipa_roots_without_extracting() {
+        for name in ["unexpected-file.txt", "Payload/Other.app/file",
+            "Makefile", ".github/workflows/fake.yml", "iTunesMetadata.plist/extra"] {
+            let (temp, sha) = fixture(&[(name, b"synthetic-only")]);
+            assert!(verify(&temp.path().join("fixture.ipa"), &sha).is_err(),
+                "unexpected IPA entry accepted: {name}");
+        }
+        for name in ["iTunesMetadata.plist", "iTunesArtwork",
+            "Payload/YouTube.app/Assets.car"] {
+            let (temp, sha) = fixture(&[(name, b"synthetic-only")]);
+            assert!(verify(&temp.path().join("fixture.ipa"), &sha).is_ok(),
+                "approved IPA entry rejected: {name}");
+        }
+    }
+
+    #[test]
     fn original_python_reports_equivalent_acceptance_on_synthetic_ipa() {
         let python=std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../scripts/build_checks.py");
@@ -187,6 +219,9 @@ mod tests {
             vec![("Payload/../escape",b"x".as_slice())],
             vec![("Payload\\escape",b"x".as_slice())],
             vec![("Payload/YouTube.app/Info.plist",b"x".as_slice())],
+            vec![("unexpected-file.txt",b"x".as_slice())],
+            vec![("Payload/Other.app/file",b"x".as_slice())],
+            vec![("iTunesArtwork",b"x".as_slice())],
         ] {
             let (temp,sha)=fixture(&extras);
             let path=temp.path().join("fixture.ipa");
