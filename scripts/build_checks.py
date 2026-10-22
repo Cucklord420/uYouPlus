@@ -81,6 +81,17 @@ def verify_ipa(path: Path, expected_sha256: str) -> str:
                 raise ValueError("Unsafe IPA archive entry path")
             if stat.S_IFMT(entry.external_attr >> 16) == stat.S_IFLNK:
                 raise ValueError("IPA contains a symbolic link")
+            # Never unpack arbitrary operator-controlled members into build inputs.
+            is_directory = name.endswith("/")
+            kind = stat.S_IFMT(entry.external_attr >> 16)
+            if kind not in ((0, stat.S_IFDIR) if is_directory else (0, stat.S_IFREG)):
+                raise ValueError("Unsupported IPA archive entry type")
+            if not (
+                (is_directory and name in ("Payload/", "Payload/YouTube.app/"))
+                or name.startswith("Payload/YouTube.app/")
+                or (not is_directory and name in ("iTunesArtwork", "iTunesMetadata.plist"))
+            ):
+                raise ValueError("Unexpected IPA archive entry")
             key = name.rstrip("/")
             if key in seen:
                 raise ValueError("Duplicate IPA archive entry")
