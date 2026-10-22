@@ -72,8 +72,7 @@ before-all::
 		trap - EXIT HUP INT TERM; \
 	fi; \
 	python3 scripts/verify_uyou_deb.py --file "$(UYOU_DEB)" --sha256 "$$UYOU_DEB_SHA256"; \
-	tar -xf "$(UYOU_DEB)" -C "$(UYOU_PATH)"; \
-	tar -xf "$(UYOU_PATH)"/data.tar* -C "$(UYOU_PATH)"; \
+	dpkg-deb --extract "$(UYOU_DEB)" "$(UYOU_PATH)"; \
 	if [ ! -f "$(UYOU_DYLIB)" ] || [ ! -d "$(UYOU_BUNDLE)" ]; then \
 		echo "Failed to verify extracted uYou files" >&2; exit 1; \
 	fi;
