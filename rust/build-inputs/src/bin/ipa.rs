@@ -45,8 +45,19 @@ fn verify(path: &Path, expected: &str) -> Result<String, String> {
         {
             return Err("Unsafe IPA archive entry path".into());
         }
-        if member.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
+        let kind = member.unix_mode().map(|mode| mode & 0o170000).unwrap_or(0);
+        if kind == 0o120000 {
             return Err("IPA contains a symbolic link".into());
+        }
+        let is_directory = name.ends_with('/');
+        if !matches!((is_directory, kind), (true, 0 | 0o040000) | (false, 0 | 0o100000)) {
+            return Err("Unsupported IPA archive entry type".into());
+        }
+        if !((is_directory && (name == "Payload/" || name == "Payload/YouTube.app/"))
+            || name.starts_with("Payload/YouTube.app/")
+            || (!is_directory && (name == "iTunesArtwork" || name == "iTunesMetadata.plist")))
+        {
+            return Err("Unexpected IPA archive entry".into());
         }
         let logical=name.trim_end_matches('/');
         if !seen.insert(logical.to_owned()) {
@@ -177,6 +188,37 @@ mod tests {
                 .output().unwrap();
             assert_eq!(rust,result.status.success(),"Mismatch with original: {extras:?}");
         }
+    }
+
+    #[test]
+    fn rejects_unexpected_archive_roots() {
+        for name in [
+            "unapproved.txt",
+            "Makefile",
+            ".github/workflows/unsafe.yml",
+            "Payload/Other.app/Info.plist",
+        ] {
+            let (temp, sha) = fixture(&[(name, b"synthetic fixture")]);
+            let error = verify(&temp.path().join("fixture.ipa"), &sha).unwrap_err();
+            assert!(error.contains("Unexpected IPA archive entry"), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_archive_entry_types() {
+        // ZIP writer creates regular files. Python's synthetic fixture covers
+        // non-regular mode bits; this test checks reviewed-path acceptance.
+        let (temp, sha) = fixture(&[("Payload/YouTube.app/Resource.txt", b"synthetic")]);
+        assert_eq!(verify(&temp.path().join("fixture.ipa"), &sha).unwrap(), "19.25.4");
+    }
+
+    #[test]
+    fn accepts_reviewed_optional_metadata() {
+        let (temp, sha) = fixture(&[
+            ("iTunesArtwork", b"synthetic"),
+            ("iTunesMetadata.plist", b"synthetic"),
+        ]);
+        assert_eq!(verify(&temp.path().join("fixture.ipa"), &sha).unwrap(), "19.25.4");
     }
 
     #[test]
