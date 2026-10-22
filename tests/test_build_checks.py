@@ -114,5 +114,27 @@ class IPATests(unittest.TestCase):
             verify_ipa(self.path, hashlib.sha256(self.path.read_bytes()).hexdigest())
 
 
+    def test_25_rejects_unexpected_archive_roots(self):
+        for name in ("unapproved.txt", "Makefile", ".github/workflows/unsafe.yml",
+                     "Payload/Other.app/Info.plist"):
+            with self.subTest(name=name):
+                digest = self.write_ipa(entries=[(name, b"synthetic fixture")])
+                with self.assertRaisesRegex(ValueError, "Unexpected IPA archive entry"):
+                    verify_ipa(self.path, digest)
+
+    def test_26_rejects_unsupported_archive_file_types(self):
+        digest = self.write_ipa(entries=[("Payload/YouTube.app/pipe", b"x", stat.S_IFIFO | 0o644)])
+        with self.assertRaisesRegex(ValueError, "Unsupported IPA archive entry type"):
+            verify_ipa(self.path, digest)
+
+    def test_27_accepts_expected_app_and_optional_metadata(self):
+        digest = self.write_ipa(entries=[
+            ("Payload/YouTube.app/Resource.txt", b"synthetic"),
+            ("iTunesArtwork", b"synthetic"),
+            ("iTunesMetadata.plist", b"synthetic"),
+        ])
+        self.assertEqual(verify_ipa(self.path, digest), "19.25.4")
+
+
 if __name__ == "__main__":
     unittest.main()
