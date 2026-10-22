@@ -1,0 +1,28 @@
+name: Validate verified uYou package download (offline)
+
+on:
+  pull_request:
+    paths:
+      - Makefile
+      - scripts/fetch-verified-uyou-deb.sh
+      - tests/test_verified_uyou_deb.py
+      - .github/workflows/buildapp.yml
+      - .github/workflows/verified-uyou-deb.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout reviewed source only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check shell syntax
+        run: bash -n scripts/fetch-verified-uyou-deb.sh
+      - name: Offline package signature and HTTP-failure regressions
+        run: python3 -m unittest discover -s tests -p 'test_verified_uyou_deb.py' -v
