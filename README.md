@@ -257,3 +257,8 @@ See [FAQs - Wiki](https://github.com/qnblackcat/uYouPlus/wiki/FAQs).
 ## Building
 
 See [Building - Wiki](https://github.com/qnblackcat/uYouPlus/wiki/Building).
+
+
+## IPA build input isolation (10-22-2026)
+
+The build validator allows only the required `Payload/YouTube.app/` bundle and the two historical root metadata files `iTunesMetadata.plist` and `iTunesArtwork`. Unknown archive roots, special files, symlinks and path traversal are rejected. The workflow downloads and extracts into an isolated runner temporary directory and copies only the verified app bundle into an otherwise absent Theos `Payload/` input path; it does not expand untrusted ZIP members over the source checkout. The URL and SHA-256 remain **operator supplied**, not independently authenticated. CI exercises fictional IPA fixtures; real macOS build and on-device behavior remain unverified. Manually review legal redistribution rights before publishing.
