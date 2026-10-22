@@ -25,7 +25,15 @@ class BuildWorkflowSafetyTests(unittest.TestCase):
     def test_06_reject_insecure_redirects(self):
         self.assertIn("--proto '=https' --proto-redir '=https'", WORKFLOW)
     def test_07_archive_validated_before_unzip(self):
-        self.assertLess(WORKFLOW.index("main/rust/build-inputs/Cargo.toml --bin ipa"), WORKFLOW.index("unzip -q main/YouTube.ipa"))
+        verify = WORKFLOW.index("main/rust/build-inputs/Cargo.toml --bin ipa")
+        extract = WORKFLOW.index('unzip -q "$staging/YouTube.ipa"')
+        self.assertLess(verify, extract)
+        self.assertIn('mktemp -d "${RUNNER_TEMP}/youtube-ipa-XXXXXXXX"', WORKFLOW)
+        self.assertIn('-d "$staging/extracted"', WORKFLOW)
+        self.assertIn('test ! -e main/Payload && test ! -L main/Payload', WORKFLOW)
+        self.assertIn('cp -R "$staging/extracted/Payload/YouTube.app" main/Payload/', WORKFLOW)
+        self.assertNotIn("unzip -q main/YouTube.ipa -d main", WORKFLOW)
+        self.assertNotIn("--output main/YouTube.ipa", WORKFLOW)
     def test_08_sensitive_action_refs_are_pinned(self):
         for line in WORKFLOW.splitlines():
             if "uses:" not in line:
