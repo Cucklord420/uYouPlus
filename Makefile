@@ -45,6 +45,7 @@ include $(THEOS_MAKE_PATH)/tweak.mk
 REMOVE_EXTENSIONS = 1
 CODESIGN_IPA = 0
 
+export UYOU_VERSION
 UYOU_PATH = Tweaks/uYou
 UYOU_DEB = $(UYOU_PATH)/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb
 UYOU_DYLIB = $(UYOU_PATH)/Library/MobileSubstrate/DynamicLibraries/uYou.dylib
@@ -55,16 +56,17 @@ internal-clean::
 
 ifneq ($(JAILBROKEN),1)
 before-all::
+	@printf '%s\n' "$UYOU_VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){1,4}$' || { echo 'Invalid uYou version' >&2; exit 1; }
+	@printf '%s\n' "$UYOU_DEB_SHA256" | grep -Eq '^[0-9A-Fa-f]{64}$' || { echo 'Independently reviewed uYou SHA-256 required' >&2; exit 1; }
 	@if [[ ! -f $(UYOU_DEB) ]]; then \
 		rm -rf $(UYOU_PATH)/*; \
 		$(PRINT_FORMAT_BLUE) "Downloading uYou"; \
 	fi
 before-all::
-	@if [[ ! -f $(UYOU_DEB) ]]; then \
- 		curl -s https://repo.miro92.com/debs/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb -o $(UYOU_DEB); \
- 	fi; \
-	if [[ ! -f $(UYOU_DYLIB) || ! -d $(UYOU_BUNDLE) ]]; then \
-		tar -xf Tweaks/uYou/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb -C Tweaks/uYou; tar -xf Tweaks/uYou/data.tar* -C Tweaks/uYou; \
+	@sh scripts/fetch_uyou_deb.sh
+	@if [[ ! -f $(UYOU_DYLIB) || ! -d $(UYOU_BUNDLE) ]]; then \
+		tar -xf "$(UYOU_DEB)" -C "$(UYOU_PATH)" || exit 1; \
+		tar -xf $(UYOU_PATH)/data.tar* -C "$(UYOU_PATH)" || exit 1; \
 		if [[ ! -f $(UYOU_DYLIB) || ! -d $(UYOU_BUNDLE) ]]; then \
 			$(PRINT_FORMAT_ERROR) "Failed to extract uYou"; exit 1; \
 		fi; \
