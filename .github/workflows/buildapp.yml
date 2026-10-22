@@ -166,9 +166,18 @@ jobs:
           IPA_SHA256: ${{ inputs.decrypted_youtube_sha256 }}
         run: |
           set -euo pipefail
-          curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' --retry 2 --max-time 600 --output main/YouTube.ipa "$YOUTUBE_URL"
-          youtube_version=$(cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- ipa --file main/YouTube.ipa --sha256 "$IPA_SHA256")
-          unzip -q main/YouTube.ipa -d main
+          # Untrusted downloads and ZIP member expansion stay outside checkout.
+          staging=$(mktemp -d "${RUNNER_TEMP}/youtube-ipa-XXXXXXXX")
+          trap 'rm -rf -- "$staging"' EXIT
+          curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' --retry 2 --max-time 600 --output "$staging/YouTube.ipa" "$YOUTUBE_URL"
+          youtube_version=$(cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- ipa --file "$staging/YouTube.ipa" --sha256 "$IPA_SHA256")
+          mkdir -p "$staging/extracted"
+          unzip -q "$staging/YouTube.ipa" 'Payload/YouTube.app/*' -d "$staging/extracted"
+          test -f "$staging/extracted/Payload/YouTube.app/Info.plist"
+          # Only the verified app bundle enters the known Theos input path.
+          test ! -e main/Payload && test ! -L main/Payload
+          mkdir main/Payload
+          cp -R "$staging/extracted/Payload/YouTube.app" main/Payload/
           cd main
           sed -i '' "s#^YOUTUBE_VERSION = .*#YOUTUBE_VERSION = $youtube_version#" Makefile
           echo "youtube_version=$youtube_version" >> "$GITHUB_OUTPUT"
