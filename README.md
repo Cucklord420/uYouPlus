@@ -257,3 +257,10 @@ See [FAQs - Wiki](https://github.com/qnblackcat/uYouPlus/wiki/FAQs).
 ## Building
 
 See [Building - Wiki](https://github.com/qnblackcat/uYouPlus/wiki/Building).
+
+### Third-party uYou package authenticity gate
+
+The uYou `.deb` contains third-party code embedded into built IPA artifacts. Before running `make package` or `./build.sh`, export `UYOU_DEB_SHA256` with an **independently reviewed 64-character SHA-256 digest matching the exact uYou version**. Manual GitHub Actions builds require the `uyou_deb_sha256` input. No default checksum is provided because this audit did not establish a trusted upstream digest.
+
+Never treat a checksum computed only from the same freshly downloaded package as independent evidence of publisher authenticity. The build stops when the checksum is missing, malformed, or mismatched, including for a cached package. This check does not make arbitrary archive extraction safe or establish that the finished app installs or runs on iOS.
+
