@@ -9,7 +9,7 @@ if [[ "$#" -ne 3 ]]; then
 fi
 version="$1"
 destination="$2"
-expected="${3,,}"
+expected="$(printf '%s' "$3" | tr '[:upper:]' '[:lower:]')"
 
 if ! [[ "$version" =~ ^[0-9]+(\.[0-9]+){1,4}$ ]]; then
   echo 'Invalid uYou version' >&2
