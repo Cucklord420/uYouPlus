@@ -6,13 +6,14 @@ import re
 import stat
 import sys
 from pathlib import Path
+from typing import Optional
 
 MAX_PACKAGE_BYTES = 512 * 1024 * 1024
 HASH = re.compile(r"[0-9a-fA-F]{64}\Z")
 AR_MAGIC = b"!<arch>\n"
 
 
-def verify_package(expected_sha256: str, path: Path | None = None) -> None:
+def verify_package(expected_sha256: str, path: Optional[Path] = None) -> None:
     if HASH.fullmatch(expected_sha256) is None:
         raise ValueError("A reviewed 64-character uYou package SHA-256 is required")
     if path is None:
