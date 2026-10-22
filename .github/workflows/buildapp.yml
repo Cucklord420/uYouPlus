@@ -11,6 +11,11 @@ on:
         default: "3.0.3"
         required: true
         type: string
+      uyou_deb_sha256:
+        description: "Independently reviewed SHA-256 for the downloaded uYou Debian package (required)"
+        default: ""
+        required: true
+        type: string
       decrypted_youtube_url:
         description: "Direct URL to the decrypted YouTube ipa. The version of YouTube will be detected automatically."
         default: ""
@@ -71,6 +76,16 @@ jobs:
           APP_NAME: ${{ inputs.app_name }}
         run: |
           cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml -- inputs --url "$IPA_URL" --sha256 "$IPA_SHA256" --version "$UYOU_VERSION" --bundle "$BUNDLE_ID" --app "$APP_NAME"
+
+      - name: Validate independently reviewed uYou deb digest
+        shell: bash
+        env:
+          EXPECTED_UYOU_SHA256: ${{ inputs.uyou_deb_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_UYOU_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]] || {
+            echo "Independent SHA-256 for uYou package required"; exit 1;
+          }
 
   build:
     needs: validate-inputs
@@ -194,6 +209,7 @@ jobs:
           UYOU_VERSION: ${{ inputs.uyou_version }}
           BUNDLE_ID: ${{ inputs.bundle_id }}
           APP_NAME: ${{ inputs.app_name }}
+          UYOU_EXPECTED_SHA256: ${{ inputs.uyou_deb_sha256 }}
 
       - name: Upload Artifact
         if: ${{ inputs.upload_artifact || inputs.create_release }}
