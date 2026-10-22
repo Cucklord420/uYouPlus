@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "fetch-verified-uyou-deb.sh"
-PAYLOAD = b"!<arch>\\nFICTIONAL TEST DEB; NOT A REAL PACKAGE\\n"
+PAYLOAD = b"!<arch>\nFICTIONAL TEST DEB; NOT A REAL PACKAGE\n"
 
 
 class VerifiedUyouDebTests(unittest.TestCase):
@@ -24,15 +24,15 @@ class VerifiedUyouDebTests(unittest.TestCase):
         self.marker = self.root / "curl-invoked"
         stub = self.fakebin / "curl"
         stub.write_text(
-            "#!/usr/bin/env python3\\n"
-            "import os,sys,pathlib\\n"
-            "args=sys.argv[1:]\\n"
-            "pathlib.Path(os.environ['CURL_MARKER']).write_text('called')\\n"
-            "assert all(flag in args for flag in ['--fail','--location','--proto','--proto-redir','--max-redirs','--max-time'])\\n"
-            "assert args[-1].startswith('https://repo.miro92.com/debs/')\\n"
-            "if os.environ.get('CURL_SHOULD_FAIL')=='1': sys.exit(22)\\n"
-            "out=pathlib.Path(args[args.index('--output')+1])\\n"
-            "out.write_bytes(pathlib.Path(os.environ['CURL_SOURCE']).read_bytes())\\n"
+            "#!/usr/bin/env python3\n"
+            "import os,sys,pathlib\n"
+            "args=sys.argv[1:]\n"
+            "pathlib.Path(os.environ['CURL_MARKER']).write_text('called')\n"
+            "assert all(flag in args for flag in ['--fail','--location','--proto','--proto-redir','--max-redirs','--max-time'])\n"
+            "assert args[-1].startswith('https://repo.miro92.com/debs/')\n"
+            "if os.environ.get('CURL_SHOULD_FAIL')=='1': sys.exit(22)\n"
+            "out=pathlib.Path(args[args.index('--output')+1])\n"
+            "out.write_bytes(pathlib.Path(os.environ['CURL_SOURCE']).read_bytes())\n"
         )
         stub.chmod(0o755)
 
