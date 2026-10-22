@@ -60,7 +60,7 @@ ifneq ($(JAILBROKEN),1)
 before-all::
 	@bash scripts/fetch-verified-uyou-deb.sh "$(UYOU_VERSION)" "$(UYOU_DEB)" "$(UYOU_EXPECTED_SHA256)"
 	@dpkg-deb --extract "$(UYOU_DEB)" "$(UYOU_PATH)" || exit 1; \
-	if [ ! -f "$(UYOU_DYLIB)" ] || [ ! -d "$(UYOU_BUNDLE)" ]; then \
+	if [ ! -f "$(UYOU_DYLIB)" ] || [ ! -d $(UYOU_BUNDLE) ]; then \
 		$(PRINT_FORMAT_ERROR) "Verified uYou package lacks expected dylib or bundle"; exit 1; \
 	fi
 else
