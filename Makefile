@@ -45,6 +45,7 @@ include $(THEOS_MAKE_PATH)/tweak.mk
 REMOVE_EXTENSIONS = 1
 CODESIGN_IPA = 0
 
+UYOU_DEB_SHA256 ?=
 UYOU_PATH = Tweaks/uYou
 UYOU_DEB = $(UYOU_PATH)/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb
 UYOU_DYLIB = $(UYOU_PATH)/Library/MobileSubstrate/DynamicLibraries/uYou.dylib
@@ -55,20 +56,12 @@ internal-clean::
 
 ifneq ($(JAILBROKEN),1)
 before-all::
-	@if [[ ! -f $(UYOU_DEB) ]]; then \
-		rm -rf $(UYOU_PATH)/*; \
-		$(PRINT_FORMAT_BLUE) "Downloading uYou"; \
-	fi
+	@python3 scripts/verify_uyou_deb.py --file "$(UYOU_DEB)" --version "$(UYOU_VERSION)" --sha256 "$(UYOU_DEB_SHA256)"
 before-all::
-	@if [[ ! -f $(UYOU_DEB) ]]; then \
- 		curl -s https://repo.miro92.com/debs/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb -o $(UYOU_DEB); \
- 	fi; \
-	if [[ ! -f $(UYOU_DYLIB) || ! -d $(UYOU_BUNDLE) ]]; then \
-		tar -xf Tweaks/uYou/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb -C Tweaks/uYou; tar -xf Tweaks/uYou/data.tar* -C Tweaks/uYou; \
-		if [[ ! -f $(UYOU_DYLIB) || ! -d $(UYOU_BUNDLE) ]]; then \
-			$(PRINT_FORMAT_ERROR) "Failed to extract uYou"; exit 1; \
-		fi; \
-	fi;
+	@tar -xf "$(UYOU_DEB)" -C "$(UYOU_PATH)" && \
+		tar -xf $(UYOU_PATH)/data.tar* -C "$(UYOU_PATH)" && \
+		test -f "$(UYOU_DYLIB)" && test -d $(UYOU_BUNDLE) || \
+		{ echo "Failed to extract verified uYou" >&2; exit 1; }
 else
 before-package::
 	@mkdir -p $(THEOS_STAGING_DIR)/Library/Application\ Support; cp -r Localizations/uYouPlus.bundle $(THEOS_STAGING_DIR)/Library/Application\ Support/
