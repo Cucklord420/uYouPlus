@@ -113,6 +113,25 @@ class IPATests(unittest.TestCase):
         with self.assertRaises(zipfile.BadZipFile):
             verify_ipa(self.path, hashlib.sha256(self.path.read_bytes()).hexdigest())
 
+    def test_25_unexpected_top_level_members_rejected_without_touching_checkout(self):
+        with tempfile.TemporaryDirectory(prefix="immutable-checkout-") as checkout:
+            marker = Path(checkout) / "Makefile"
+            marker.write_text("trusted build source\n")
+            for name in ("Makefile", "unexpected-file.txt", "Payload/Other.app/Info.plist"):
+                digest = self.write_ipa(entries=[(name, b"untrusted synthetic bytes")])
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    verify_ipa(self.path, digest)
+                self.assertEqual(marker.read_text(), "trusted build source\n")
+                self.assertEqual(sorted(p.name for p in Path(checkout).iterdir()), ["Makefile"])
+
+    def test_26_known_ipa_metadata_paths_allowed(self):
+        digest = self.write_ipa(entries=[
+            ("iTunesMetadata.plist", b"synthetic"),
+            ("iTunesArtwork", b"synthetic"),
+            ("Payload/YouTube.app/Asset.car", b"synthetic"),
+        ])
+        self.assertEqual(verify_ipa(self.path, digest), "19.25.4")
+
 
 if __name__ == "__main__":
     unittest.main()
