@@ -166,9 +166,14 @@ jobs:
           IPA_SHA256: ${{ inputs.decrypted_youtube_sha256 }}
         run: |
           set -euo pipefail
-          curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' --retry 2 --max-time 600 --output main/YouTube.ipa "$YOUTUBE_URL"
-          youtube_version=$(cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- ipa --file main/YouTube.ipa --sha256 "$IPA_SHA256")
-          unzip -q main/YouTube.ipa -d main
+          IPA_STAGE="$RUNNER_TEMP/uyouplus-ipa"
+          mkdir -p "$IPA_STAGE"
+          test ! -e "$IPA_STAGE/extracted"
+          curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' --retry 2 --max-time 600 --output "$IPA_STAGE/input.ipa" "$YOUTUBE_URL"
+          youtube_version=$(cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- ipa --file "$IPA_STAGE/input.ipa" --sha256 "$IPA_SHA256")
+          mkdir -p "$IPA_STAGE/extracted"
+          unzip -q "$IPA_STAGE/input.ipa" -d "$IPA_STAGE/extracted"
+          test -f "$IPA_STAGE/extracted/Payload/YouTube.app/Info.plist"
           cd main
           sed -i '' "s#^YOUTUBE_VERSION = .*#YOUTUBE_VERSION = $youtube_version#" Makefile
           echo "youtube_version=$youtube_version" >> "$GITHUB_OUTPUT"
@@ -181,7 +186,8 @@ jobs:
           cd ${{ github.workspace }}/main
           sed -i '' "s#^BUNDLE_ID = .*#BUNDLE_ID = $BUNDLE_ID#" Makefile
           sed -i '' "s#^DISPLAY_NAME = .*#DISPLAY_NAME = $APP_NAME#" Makefile          
-          make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
+          test -f "$RUNNER_TEMP/uyouplus-ipa/extracted/Payload/YouTube.app/Info.plist"
+          make package THEOS_PACKAGE_SCHEME=rootless IPA="$RUNNER_TEMP/uyouplus-ipa/extracted/Payload/YouTube.app" FINALPACKAGE=1
           shopt -s nullglob
           packages=(packages/*.ipa)
           test "${#packages[@]}" -eq 1 || { echo 'Expected exactly one built IPA'; exit 1; }
