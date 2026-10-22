@@ -257,3 +257,17 @@ See [FAQs - Wiki](https://github.com/qnblackcat/uYouPlus/wiki/FAQs).
 ## Building
 
 See [Building - Wiki](https://github.com/qnblackcat/uYouPlus/wiki/Building).
+
+## Verify third-party uYou code before building
+
+The non-jailbroken Makefile downloads a third-party `.deb` containing injected code. It now **fails closed** unless an expected SHA-256 has been independently sourced, reviewed and supplied. The input must not be copied from the same download being authenticated. No publisher-authenticated digest for the default uYou version has been established in this repository; an empty hash intentionally blocks unauthenticated builds.
+
+For a local build, supply the independently reviewed 64-hex SHA-256 as a Make variable or environment variable (replace the placeholder with the independently verified digest):
+
+```bash
+make package UYOU_EXPECTED_SHA256=<64-hex-reviewed-digest> THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
+```
+
+Manual GitHub Actions builds require the `uyou_deb_sha256` input. The installer verifies newly downloaded **and cached** packages before extraction, rejects HTTP failures, limits redirect schemes to HTTPS, and never treats a missing/incorrect digest as permission to continue. This SHA-256 check authenticates only against the reviewed digest; it does not establish publisher provenance or confirm that the resulting iOS application runs correctly.
+
+Offline checks: `bash -n scripts/fetch-verified-uyou-deb.sh` and `python3 -m unittest discover -s tests -p 'test_verified_uyou_deb.py' -v`. Tests use synthetic files and a fake `curl`; they do not download proprietary packages. Incremental software license/hosting TCO is **$0** within the existing GitHub plan; CI/reviewer labor and any macOS build-runner minutes remain unquantified.
