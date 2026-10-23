@@ -6,6 +6,7 @@ Before any non-jailbroken build, independently establish and review the expected
 
 - GitHub Actions: provide `uyou_deb_sha256` in the manual workflow alongside the existing YouTube IPA hash.
 - Local build: export `UYOU_DEB_SHA256` with that reviewed 64-hex-digit value before invoking `./build.sh`. Local build and CI reject an absent or invalid value.
+- Package versions are restricted to a 1–40 character ASCII value beginning with a digit. The verifier also rejects a package file located under a symlinked parent directory.
 - Cached packages are rechecked, downloads are limited to HTTPS with bounded time/size, and the archive hash is validated before package extraction. A mismatch or missing hash intentionally stops the build.
 - Debian `.deb` files are outer `ar` archives, not standalone TAR files. After digest verification, `scripts/extract_uyou_deb.py` runs `dpkg-deb --extract` in a fresh temporary directory separate from the build destination. It checks the required dylib and bundle in that staged tree, then replaces the complete build `Library` payload only after validation, so stale files cannot make an incomplete package appear valid. The macOS workflow installs `dpkg`; local builds also need `dpkg-deb`. Synthetic regressions use fictional `.deb` archives.
 - The synthetic offline tests exercise hash mismatch, error bodies, symlinks, empty/oversized packages and the CI/Makefile gate. They **do not** establish the authenticity of a particular upstream archive, prove the entire package is safe, execute Theos, or test on an installed iPhone.

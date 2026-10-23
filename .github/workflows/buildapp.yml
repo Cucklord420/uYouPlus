@@ -70,7 +70,8 @@ jobs:
       - name: Require independently pinned uYou package digest
         env:
           UYOU_DEB_SHA256: ${{ inputs.uyou_deb_sha256 }}
-        run: python3 scripts/verify_uyou_deb.py --sha256 "$UYOU_DEB_SHA256"
+          UYOU_VERSION: ${{ inputs.uyou_version }}
+        run: python3 scripts/verify_uyou_deb.py --sha256 "$UYOU_DEB_SHA256" --version "$UYOU_VERSION"
       - name: Validate operator-supplied build settings
         env:
           IPA_URL: ${{ inputs.decrypted_youtube_url }}
