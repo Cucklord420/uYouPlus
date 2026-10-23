@@ -182,13 +182,13 @@ mod tests {
         let (directory, _) = fixture(&[(name, data)]);
         let path = directory.path().join("fixture.ipa");
         let mut contents = std::fs::read(&path).unwrap();
-        let end = contents.windows(4).rposition(|w| w == b"PK\\x05\\x06").unwrap();
+        let end = contents.windows(4).rposition(|w| w == b"PK\x05\x06").unwrap();
         let central_size = u32::from_le_bytes(contents[end + 12..end + 16].try_into().unwrap()) as usize;
         let mut offset = u32::from_le_bytes(contents[end + 16..end + 20].try_into().unwrap()) as usize;
         let central_end = offset + central_size;
         let mut patched = 0;
         while offset < central_end {
-            assert_eq!(&contents[offset..offset + 4], b"PK\\x01\\x02");
+            assert_eq!(&contents[offset..offset + 4], b"PK\x01\x02");
             let name_len = u16::from_le_bytes(contents[offset + 28..offset + 30].try_into().unwrap()) as usize;
             let extra_len = u16::from_le_bytes(contents[offset + 30..offset + 32].try_into().unwrap()) as usize;
             let comment_len = u16::from_le_bytes(contents[offset + 32..offset + 34].try_into().unwrap()) as usize;
