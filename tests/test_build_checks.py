@@ -124,6 +124,13 @@ class IPATests(unittest.TestCase):
                 self.assertEqual(marker.read_text(), "trusted build source\n")
                 self.assertEqual(sorted(p.name for p in Path(checkout).iterdir()), ["Makefile"])
 
+    def test_27_rejects_unsupported_archive_file_types(self):
+        digest = self.write_ipa(
+            entries=[("Payload/YouTube.app/pipe", b"synthetic", stat.S_IFIFO | 0o644)]
+        )
+        with self.assertRaisesRegex(ValueError, "special file"):
+            verify_ipa(self.path, digest)
+
     def test_26_known_ipa_metadata_paths_allowed(self):
         digest = self.write_ipa(entries=[
             ("iTunesMetadata.plist", b"synthetic"),

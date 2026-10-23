@@ -176,6 +176,48 @@ mod tests {
         (directory,format!("{:x}",Sha256::digest(&contents)))
     }
 
+    // ZipWriter's unix_permissions only stores rwx bits, so construct a
+    // synthetic Unix FIFO by setting the central-directory host and mode bits.
+    fn fixture_with_unix_mode(name: &str, data: &[u8], mode: u32) -> (tempfile::TempDir, String) {
+        let (directory, _) = fixture(&[(name, data)]);
+        let path = directory.path().join("fixture.ipa");
+        let mut contents = std::fs::read(&path).unwrap();
+        let end = contents.windows(4).rposition(|w| w == b"PK\\x05\\x06").unwrap();
+        let central_size = u32::from_le_bytes(contents[end + 12..end + 16].try_into().unwrap()) as usize;
+        let mut offset = u32::from_le_bytes(contents[end + 16..end + 20].try_into().unwrap()) as usize;
+        let central_end = offset + central_size;
+        let mut patched = 0;
+        while offset < central_end {
+            assert_eq!(&contents[offset..offset + 4], b"PK\\x01\\x02");
+            let name_len = u16::from_le_bytes(contents[offset + 28..offset + 30].try_into().unwrap()) as usize;
+            let extra_len = u16::from_le_bytes(contents[offset + 30..offset + 32].try_into().unwrap()) as usize;
+            let comment_len = u16::from_le_bytes(contents[offset + 32..offset + 34].try_into().unwrap()) as usize;
+            let name_start = offset + 46;
+            if &contents[name_start..name_start + name_len] == name.as_bytes() {
+                contents[offset + 5] = 3; // Unix host system in "version made by".
+                let external_attributes = mode << 16;
+                contents[offset + 38..offset + 42].copy_from_slice(&external_attributes.to_le_bytes());
+                patched += 1;
+            }
+            offset = name_start + name_len + extra_len + comment_len;
+        }
+        assert_eq!(offset, central_end);
+        assert_eq!(patched, 1);
+        std::fs::write(&path, &contents).unwrap();
+        (directory, format!("{:x}", Sha256::digest(&contents)))
+    }
+
+    #[test]
+    fn rejects_fifo_archive_members() {
+        let (temp, sha) = fixture_with_unix_mode(
+            "Payload/YouTube.app/pipe",
+            b"synthetic fifo payload",
+            0o010644,
+        );
+        let error = verify(&temp.path().join("fixture.ipa"), &sha).unwrap_err();
+        assert!(error.contains("special file"), "{error}");
+    }
+
     #[test]
     fn validates_synthetic_ipa_and_checksum() {
         let (temp,sha)=fixture(&[]);
