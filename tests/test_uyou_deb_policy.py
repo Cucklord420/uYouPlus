@@ -15,7 +15,11 @@ class BuildChecksumPolicyTests(unittest.TestCase):
     def test_makefile_authenticates_before_download_and_extraction(self):
         makefile = (ROOT / "Makefile").read_text()
         self.assertLess(makefile.index("verify_uyou_deb.py --sha256"), makefile.index("curl --fail"))
-        self.assertLess(makefile.index("verify_uyou_deb.py --file"), makefile.index('dpkg-deb --extract "$(UYOU_DEB)"'))
+        self.assertLess(
+            makefile.index('verify_uyou_deb.py --file "$(UYOU_DEB)"'),
+            makefile.index('extract_uyou_deb.py --file "$(UYOU_DEB)"'),
+        )
+        self.assertNotIn('dpkg-deb --extract "$(UYOU_DEB)" "$(UYOU_PATH)"', makefile)
         self.assertNotIn('tar -xf "$(UYOU_DEB)"', makefile)
         self.assertIn("--proto-redir '=https'", makefile)
         self.assertIn("--max-filesize 536870912", makefile)

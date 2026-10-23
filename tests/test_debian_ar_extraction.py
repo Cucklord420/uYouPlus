@@ -85,6 +85,7 @@ class DebianArExtractionTests(unittest.TestCase):
         scripts = root / "scripts"
         scripts.mkdir()
         shutil.copy2(ROOT / "scripts/verify_uyou_deb.py", scripts / "verify_uyou_deb.py")
+        shutil.copy2(ROOT / "scripts/extract_uyou_deb.py", scripts / "extract_uyou_deb.py")
         makefiles = root / "fake-theos/makefiles"
         makefiles.mkdir(parents=True)
         for name in ("common.mk", "aggregate.mk", "tweak.mk"):
