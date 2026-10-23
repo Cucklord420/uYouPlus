@@ -51,7 +51,7 @@ class DebianArExtractionTests(unittest.TestCase):
                 (dest / "Library/Application Support/uYouBundle.bundle").is_dir()
             )
 
-    def _build_deb(self, root: Path, *, complete: bool, version: str = "3.0.3") -> Path:
+    def _build_deb(self, root: Path, *, complete: bool, version: str = "3.0.3", output=None) -> Path:
         source = root / "package"
         (source / "DEBIAN").mkdir(parents=True)
         (source / "DEBIAN" / "control").write_text(
@@ -70,7 +70,7 @@ class DebianArExtractionTests(unittest.TestCase):
             unrelated = source / "usr/share/doc/synthetic-uyou/readme"
             unrelated.parent.mkdir(parents=True)
             unrelated.write_text("No uYou library payload in this archive.")
-        deb = root / f"Tweaks/uYou/com.miro.uyou_{version}_iphoneos-arm.deb"
+        deb = output or root / f"Tweaks/uYou/com.miro.uyou_{version}_iphoneos-arm.deb"
         deb.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             ["dpkg-deb", "--build", str(source), str(deb)],
@@ -91,8 +91,12 @@ class DebianArExtractionTests(unittest.TestCase):
         for name in ("common.mk", "aggregate.mk", "tweak.mk"):
             (makefiles / name).write_text("")
 
-    def _run_make(self, root: Path, digest: str, version: str = "3.0.3") -> subprocess.CompletedProcess:
+    def _run_make(self, root: Path, digest: str, version: str = "3.0.3", path_prefix=None, extra_env=None) -> subprocess.CompletedProcess:
         env = os.environ.copy()
+        if path_prefix is not None:
+            env["PATH"] = str(path_prefix) + os.pathsep + env.get("PATH", "")
+        if extra_env:
+            env.update(extra_env)
         env.update(
             {
                 "THEOS": str(root / "fake-theos"),
@@ -109,6 +113,25 @@ class DebianArExtractionTests(unittest.TestCase):
             text=True,
             check=False,
         )
+
+
+    def _write_fake_curl(self, bin_dir: Path) -> None:
+        bin_dir.mkdir(parents=True)
+        curl = bin_dir / "curl"
+        curl.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os\n"
+            "from pathlib import Path\n"
+            "import shutil\n"
+            "import sys\n"
+            "args = sys.argv[1:]\n"
+            "output = Path(args[args.index('--output') + 1])\n"
+            "if os.environ.get('SYNTHETIC_CURL_FAIL') == '1':\n"
+            "    output.write_bytes(b'HTTP 503 synthetic failure')\n"
+            "    raise SystemExit(22)\n"
+            "shutil.copyfile(os.environ['SYNTHETIC_DEB'], output)\n"
+        )
+        curl.chmod(0o755)
 
     @unittest.skipUnless(
         shutil.which("dpkg-deb") and shutil.which("make"),
@@ -198,6 +221,64 @@ class DebianArExtractionTests(unittest.TestCase):
                 "a malformed package version reached cached package extraction",
             )
             self.assertFalse((checkout / "Tweaks/uYou/Library").exists())
+
+
+    @unittest.skipUnless(
+        shutil.which("dpkg-deb") and shutil.which("make"),
+        "dpkg-deb and GNU make are required for this integration regression",
+    )
+    def test_failed_download_does_not_publish_or_leave_temporary_package(self):
+        with tempfile.TemporaryDirectory(prefix="uyou-download-failure-") as tmp:
+            checkout = Path(tmp) / "checkout"
+            checkout.mkdir()
+            self._prepare_make_checkout(checkout)
+            fake_bin = Path(tmp) / "fake-bin"
+            self._write_fake_curl(fake_bin)
+
+            result = self._run_make(
+                checkout,
+                "a" * 64,
+                path_prefix=fake_bin,
+                extra_env={"SYNTHETIC_CURL_FAIL": "1"},
+            )
+
+            package = checkout / "Tweaks/uYou/com.miro.uyou_3.0.3_iphoneos-arm.deb"
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(package.exists())
+            self.assertEqual(list(package.parent.glob("*.download.*")), [])
+
+    @unittest.skipUnless(
+        shutil.which("dpkg-deb") and shutil.which("make"),
+        "dpkg-deb and GNU make are required for this integration regression",
+    )
+    def test_downloaded_package_is_verified_then_promoted_and_extracted(self):
+        with tempfile.TemporaryDirectory(prefix="uyou-download-success-") as tmp:
+            checkout = Path(tmp) / "checkout"
+            checkout.mkdir()
+            self._prepare_make_checkout(checkout)
+            fixture_deb = self._build_deb(
+                checkout,
+                complete=True,
+                output=checkout / "synthetic-source.deb",
+            )
+            fake_bin = Path(tmp) / "fake-bin"
+            self._write_fake_curl(fake_bin)
+
+            result = self._run_make(
+                checkout,
+                hashlib.sha256(fixture_deb.read_bytes()).hexdigest(),
+                path_prefix=fake_bin,
+                extra_env={"SYNTHETIC_DEB": str(fixture_deb)},
+            )
+
+            package = checkout / "Tweaks/uYou/com.miro.uyou_3.0.3_iphoneos-arm.deb"
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(package.read_bytes(), fixture_deb.read_bytes())
+            self.assertEqual(
+                (checkout / "Tweaks/uYou/Library/MobileSubstrate/DynamicLibraries/uYou.dylib").read_bytes(),
+                b"NEW FICTIONAL DYLIB",
+            )
+            self.assertEqual(list(package.parent.glob("*.download.*")), [])
 
 
 if __name__ == "__main__":
