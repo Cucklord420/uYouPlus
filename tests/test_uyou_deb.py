@@ -59,5 +59,20 @@ class PackageIntegrityTests(unittest.TestCase):
             verify_package(self.sha, self.path)
 
 
+    def test_symlinked_package_parent_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="uyou-parent-link-") as tmp:
+            root = Path(tmp)
+            real_parent = root / "real"
+            real_parent.mkdir()
+            package = real_parent / "sample.deb"
+            package.write_bytes(b"!<arch>\nsynthetic package")
+            digest = hashlib.sha256(package.read_bytes()).hexdigest()
+            linked_parent = root / "linked"
+            linked_parent.symlink_to(real_parent, target_is_directory=True)
+
+            with self.assertRaisesRegex(ValueError, "parent"):
+                verify_package(digest, linked_parent / "sample.deb")
+
+
 if __name__ == "__main__":
     unittest.main()

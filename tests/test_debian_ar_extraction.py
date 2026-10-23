@@ -51,7 +51,7 @@ class DebianArExtractionTests(unittest.TestCase):
                 (dest / "Library/Application Support/uYouBundle.bundle").is_dir()
             )
 
-    def _build_deb(self, root: Path, *, complete: bool) -> Path:
+    def _build_deb(self, root: Path, *, complete: bool, version: str = "3.0.3") -> Path:
         source = root / "package"
         (source / "DEBIAN").mkdir(parents=True)
         (source / "DEBIAN" / "control").write_text(
@@ -70,7 +70,7 @@ class DebianArExtractionTests(unittest.TestCase):
             unrelated = source / "usr/share/doc/synthetic-uyou/readme"
             unrelated.parent.mkdir(parents=True)
             unrelated.write_text("No uYou library payload in this archive.")
-        deb = root / "Tweaks/uYou/com.miro.uyou_3.0.3_iphoneos-arm.deb"
+        deb = root / f"Tweaks/uYou/com.miro.uyou_{version}_iphoneos-arm.deb"
         deb.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             ["dpkg-deb", "--build", str(source), str(deb)],
@@ -91,13 +91,13 @@ class DebianArExtractionTests(unittest.TestCase):
         for name in ("common.mk", "aggregate.mk", "tweak.mk"):
             (makefiles / name).write_text("")
 
-    def _run_make(self, root: Path, digest: str) -> subprocess.CompletedProcess:
+    def _run_make(self, root: Path, digest: str, version: str = "3.0.3") -> subprocess.CompletedProcess:
         env = os.environ.copy()
         env.update(
             {
                 "THEOS": str(root / "fake-theos"),
                 "THEOS_MAKE_PATH": str(root / "fake-theos/makefiles"),
-                "UYOU_VERSION": "3.0.3",
+                "UYOU_VERSION": version,
                 "UYOU_DEB_SHA256": digest,
             }
         )
@@ -170,6 +170,34 @@ class DebianArExtractionTests(unittest.TestCase):
             self.assertTrue((library / "Application Support/uYouBundle.bundle/Info.plist").is_file())
             self.assertFalse(stale_extra.exists())
             self.assertFalse(escaped_stale_bundle.exists())
+
+
+    @unittest.skipUnless(
+        shutil.which("dpkg-deb") and shutil.which("make"),
+        "dpkg-deb and GNU make are required for this integration regression",
+    )
+    def test_make_rejects_malformed_version_before_reusing_cached_package(self):
+        with tempfile.TemporaryDirectory(prefix="uyou-invalid-version-") as tmp:
+            checkout = Path(tmp) / "checkout"
+            checkout.mkdir()
+            self._prepare_make_checkout(checkout)
+            version = "3.0.3;malformed"
+            self._build_deb(checkout, complete=True, version=version)
+
+            result = self._run_make(
+                checkout,
+                hashlib.sha256(
+                    (checkout / "Tweaks/uYou" / f"com.miro.uyou_{version}_iphoneos-arm.deb").read_bytes()
+                ).hexdigest(),
+                version=version,
+            )
+
+            self.assertNotEqual(
+                result.returncode,
+                0,
+                "a malformed package version reached cached package extraction",
+            )
+            self.assertFalse((checkout / "Tweaks/uYou/Library").exists())
 
 
 if __name__ == "__main__":
