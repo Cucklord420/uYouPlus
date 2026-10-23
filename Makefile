@@ -48,26 +48,35 @@ CODESIGN_IPA = 0
 UYOU_PATH = Tweaks/uYou
 UYOU_DEB = $(UYOU_PATH)/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb
 UYOU_DYLIB = $(UYOU_PATH)/Library/MobileSubstrate/DynamicLibraries/uYou.dylib
-UYOU_BUNDLE = $(UYOU_PATH)/Library/Application\ Support/uYouBundle.bundle
+UYOU_BUNDLE = $(UYOU_PATH)/Library/Application Support/uYouBundle.bundle
+
+export UYOU_VERSION
 
 internal-clean::
 	@rm -rf $(UYOU_PATH)/*
 
 ifneq ($(JAILBROKEN),1)
+# Check the operator-reviewed digest BEFORE cleaning, downloading or unpacking.
 before-all::
-	@if [[ ! -f $(UYOU_DEB) ]]; then \
-		rm -rf $(UYOU_PATH)/*; \
-		$(PRINT_FORMAT_BLUE) "Downloading uYou"; \
-	fi
+	@python3 scripts/verify_uyou_deb.py --sha256 "$$UYOU_DEB_SHA256" --version "$$UYOU_VERSION"
+
 before-all::
-	@if [[ ! -f $(UYOU_DEB) ]]; then \
- 		curl -s https://repo.miro92.com/debs/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb -o $(UYOU_DEB); \
- 	fi; \
-	if [[ ! -f $(UYOU_DYLIB) || ! -d $(UYOU_BUNDLE) ]]; then \
-		tar -xf Tweaks/uYou/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb -C Tweaks/uYou; tar -xf Tweaks/uYou/data.tar* -C Tweaks/uYou; \
-		if [[ ! -f $(UYOU_DYLIB) || ! -d $(UYOU_BUNDLE) ]]; then \
-			$(PRINT_FORMAT_ERROR) "Failed to extract uYou"; exit 1; \
-		fi; \
+	@set -eu; \
+	if [ ! -f "$(UYOU_DEB)" ]; then \
+		mkdir -p "$(UYOU_PATH)"; \
+		tmp=$$(mktemp "$(UYOU_DEB).download.XXXXXXXX"); \
+		trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+		curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+			--max-redirs 5 --connect-timeout 30 --max-time 600 --max-filesize 536870912 --retry 2 \
+			--output "$$tmp" "https://repo.miro92.com/debs/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb"; \
+		python3 scripts/verify_uyou_deb.py --file "$$tmp" --sha256 "$$UYOU_DEB_SHA256" --version "$$UYOU_VERSION"; \
+		mv -f "$$tmp" "$(UYOU_DEB)"; \
+		trap - EXIT HUP INT TERM; \
+	fi; \
+	python3 scripts/verify_uyou_deb.py --file "$(UYOU_DEB)" --sha256 "$$UYOU_DEB_SHA256" --version "$$UYOU_VERSION"; \
+	python3 scripts/extract_uyou_deb.py --file "$(UYOU_DEB)" --destination "$(UYOU_PATH)"; \
+	if [ ! -f "$(UYOU_DYLIB)" ] || [ ! -d "$(UYOU_BUNDLE)" ]; then \
+		echo "Failed to verify extracted uYou files" >&2; exit 1; \
 	fi;
 else
 before-package::
