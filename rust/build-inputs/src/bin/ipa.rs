@@ -57,6 +57,22 @@ fn verify(path: &Path, expected: &str) -> Result<String, String> {
         {
             return Err("IPA contains a symbolic link".into());
         }
+        if member.unix_mode().is_some_and(|mode| {
+            let kind = mode & 0o170000;
+            kind != 0 && kind != 0o100000 && kind != 0o040000
+        }) {
+            return Err("IPA contains a special file".into());
+        }
+        // The workflow only needs the app bundle. Permit two known historical
+        // root metadata files but never arbitrary checkout-relative paths.
+        let allowed = name == "Payload/"
+            || name == "Payload/YouTube.app/"
+            || name.starts_with("Payload/YouTube.app/")
+            || (matches!(name.as_str(), "iTunesMetadata.plist" | "iTunesArtwork")
+                && !member.is_dir());
+        if !allowed {
+            return Err("IPA contains an unapproved archive member".into());
+        }
         let logical = name.trim_end_matches('/');
         if !seen.insert(logical.to_owned()) {
             return Err("Duplicate IPA archive entry".into());
@@ -193,6 +209,57 @@ mod tests {
         (directory, format!("{:x}", Sha256::digest(&contents)))
     }
 
+    // ZipWriter's unix_permissions only stores rwx bits, so construct a
+    // synthetic Unix FIFO by setting the central-directory host and mode bits.
+    fn fixture_with_unix_mode(name: &str, data: &[u8], mode: u32) -> (tempfile::TempDir, String) {
+        let (directory, _) = fixture(&[(name, data)]);
+        let path = directory.path().join("fixture.ipa");
+        let mut contents = std::fs::read(&path).unwrap();
+        let end = contents
+            .windows(4)
+            .rposition(|w| w == b"PK\x05\x06")
+            .unwrap();
+        let central_size =
+            u32::from_le_bytes(contents[end + 12..end + 16].try_into().unwrap()) as usize;
+        let mut offset =
+            u32::from_le_bytes(contents[end + 16..end + 20].try_into().unwrap()) as usize;
+        let central_end = offset + central_size;
+        let mut patched = 0;
+        while offset < central_end {
+            assert_eq!(&contents[offset..offset + 4], b"PK\x01\x02");
+            let name_len =
+                u16::from_le_bytes(contents[offset + 28..offset + 30].try_into().unwrap()) as usize;
+            let extra_len =
+                u16::from_le_bytes(contents[offset + 30..offset + 32].try_into().unwrap()) as usize;
+            let comment_len =
+                u16::from_le_bytes(contents[offset + 32..offset + 34].try_into().unwrap()) as usize;
+            let name_start = offset + 46;
+            if &contents[name_start..name_start + name_len] == name.as_bytes() {
+                contents[offset + 5] = 3; // Unix host system in "version made by".
+                let external_attributes = mode << 16;
+                contents[offset + 38..offset + 42]
+                    .copy_from_slice(&external_attributes.to_le_bytes());
+                patched += 1;
+            }
+            offset = name_start + name_len + extra_len + comment_len;
+        }
+        assert_eq!(offset, central_end);
+        assert_eq!(patched, 1);
+        std::fs::write(&path, &contents).unwrap();
+        (directory, format!("{:x}", Sha256::digest(&contents)))
+    }
+
+    #[test]
+    fn rejects_fifo_archive_members() {
+        let (temp, sha) = fixture_with_unix_mode(
+            "Payload/YouTube.app/pipe",
+            b"synthetic fifo payload",
+            0o010644,
+        );
+        let error = verify(&temp.path().join("fixture.ipa"), &sha).unwrap_err();
+        assert!(error.contains("special file"), "{error}");
+    }
+
     #[test]
     fn validates_synthetic_ipa_and_checksum() {
         let (temp, sha) = fixture(&[]);
@@ -220,6 +287,34 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unexpected_ipa_roots_without_extracting() {
+        for name in [
+            "unexpected-file.txt",
+            "Payload/Other.app/file",
+            "Makefile",
+            ".github/workflows/fake.yml",
+            "iTunesMetadata.plist/extra",
+        ] {
+            let (temp, sha) = fixture(&[(name, b"synthetic-only")]);
+            assert!(
+                verify(&temp.path().join("fixture.ipa"), &sha).is_err(),
+                "unexpected IPA entry accepted: {name}"
+            );
+        }
+        for name in [
+            "iTunesMetadata.plist",
+            "iTunesArtwork",
+            "Payload/YouTube.app/Assets.car",
+        ] {
+            let (temp, sha) = fixture(&[(name, b"synthetic-only")]);
+            assert!(
+                verify(&temp.path().join("fixture.ipa"), &sha).is_ok(),
+                "approved IPA entry rejected: {name}"
+            );
+        }
+    }
+
+    #[test]
     fn original_python_reports_equivalent_acceptance_on_synthetic_ipa() {
         let python = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../scripts/build_checks.py");
@@ -229,6 +324,9 @@ mod tests {
             vec![("Payload/../escape", b"x".as_slice())],
             vec![("Payload\\escape", b"x".as_slice())],
             vec![("Payload/YouTube.app/Info.plist", b"x".as_slice())],
+            vec![("unexpected-file.txt", b"x".as_slice())],
+            vec![("Payload/Other.app/file", b"x".as_slice())],
+            vec![("iTunesArtwork", b"x".as_slice())],
         ] {
             let (temp, sha) = fixture(&extras);
             let path = temp.path().join("fixture.ipa");
