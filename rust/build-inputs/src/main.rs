@@ -149,7 +149,7 @@ mod tests {
                 false,
             ),
             (
-                "https://downloads.example.org/my.ipa\\ncommand",
+                "https://downloads.example.org/my.ipa\ncommand",
                 version,
                 bundle,
                 app,
