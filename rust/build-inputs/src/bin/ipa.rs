@@ -215,21 +215,30 @@ mod tests {
         let (directory, _) = fixture(&[(name, data)]);
         let path = directory.path().join("fixture.ipa");
         let mut contents = std::fs::read(&path).unwrap();
-        let end = contents.windows(4).rposition(|w| w == b"PK\x05\x06").unwrap();
-        let central_size = u32::from_le_bytes(contents[end + 12..end + 16].try_into().unwrap()) as usize;
-        let mut offset = u32::from_le_bytes(contents[end + 16..end + 20].try_into().unwrap()) as usize;
+        let end = contents
+            .windows(4)
+            .rposition(|w| w == b"PK\x05\x06")
+            .unwrap();
+        let central_size =
+            u32::from_le_bytes(contents[end + 12..end + 16].try_into().unwrap()) as usize;
+        let mut offset =
+            u32::from_le_bytes(contents[end + 16..end + 20].try_into().unwrap()) as usize;
         let central_end = offset + central_size;
         let mut patched = 0;
         while offset < central_end {
             assert_eq!(&contents[offset..offset + 4], b"PK\x01\x02");
-            let name_len = u16::from_le_bytes(contents[offset + 28..offset + 30].try_into().unwrap()) as usize;
-            let extra_len = u16::from_le_bytes(contents[offset + 30..offset + 32].try_into().unwrap()) as usize;
-            let comment_len = u16::from_le_bytes(contents[offset + 32..offset + 34].try_into().unwrap()) as usize;
+            let name_len =
+                u16::from_le_bytes(contents[offset + 28..offset + 30].try_into().unwrap()) as usize;
+            let extra_len =
+                u16::from_le_bytes(contents[offset + 30..offset + 32].try_into().unwrap()) as usize;
+            let comment_len =
+                u16::from_le_bytes(contents[offset + 32..offset + 34].try_into().unwrap()) as usize;
             let name_start = offset + 46;
             if &contents[name_start..name_start + name_len] == name.as_bytes() {
                 contents[offset + 5] = 3; // Unix host system in "version made by".
                 let external_attributes = mode << 16;
-                contents[offset + 38..offset + 42].copy_from_slice(&external_attributes.to_le_bytes());
+                contents[offset + 38..offset + 42]
+                    .copy_from_slice(&external_attributes.to_le_bytes());
                 patched += 1;
             }
             offset = name_start + name_len + extra_len + comment_len;
@@ -279,17 +288,29 @@ mod tests {
 
     #[test]
     fn rejects_unexpected_ipa_roots_without_extracting() {
-        for name in ["unexpected-file.txt", "Payload/Other.app/file",
-            "Makefile", ".github/workflows/fake.yml", "iTunesMetadata.plist/extra"] {
+        for name in [
+            "unexpected-file.txt",
+            "Payload/Other.app/file",
+            "Makefile",
+            ".github/workflows/fake.yml",
+            "iTunesMetadata.plist/extra",
+        ] {
             let (temp, sha) = fixture(&[(name, b"synthetic-only")]);
-            assert!(verify(&temp.path().join("fixture.ipa"), &sha).is_err(),
-                "unexpected IPA entry accepted: {name}");
+            assert!(
+                verify(&temp.path().join("fixture.ipa"), &sha).is_err(),
+                "unexpected IPA entry accepted: {name}"
+            );
         }
-        for name in ["iTunesMetadata.plist", "iTunesArtwork",
-            "Payload/YouTube.app/Assets.car"] {
+        for name in [
+            "iTunesMetadata.plist",
+            "iTunesArtwork",
+            "Payload/YouTube.app/Assets.car",
+        ] {
             let (temp, sha) = fixture(&[(name, b"synthetic-only")]);
-            assert!(verify(&temp.path().join("fixture.ipa"), &sha).is_ok(),
-                "approved IPA entry rejected: {name}");
+            assert!(
+                verify(&temp.path().join("fixture.ipa"), &sha).is_ok(),
+                "approved IPA entry rejected: {name}"
+            );
         }
     }
 
@@ -303,9 +324,9 @@ mod tests {
             vec![("Payload/../escape", b"x".as_slice())],
             vec![("Payload\\escape", b"x".as_slice())],
             vec![("Payload/YouTube.app/Info.plist", b"x".as_slice())],
-            vec![("unexpected-file.txt",b"x".as_slice())],
-            vec![("Payload/Other.app/file",b"x".as_slice())],
-            vec![("iTunesArtwork",b"x".as_slice())],
+            vec![("unexpected-file.txt", b"x".as_slice())],
+            vec![("Payload/Other.app/file", b"x".as_slice())],
+            vec![("iTunesArtwork", b"x".as_slice())],
         ] {
             let (temp, sha) = fixture(&extras);
             let path = temp.path().join("fixture.ipa");
