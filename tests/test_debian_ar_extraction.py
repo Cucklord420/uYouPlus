@@ -146,7 +146,7 @@ class DebianArExtractionTests(unittest.TestCase):
             stale_dylib = library / "MobileSubstrate/DynamicLibraries/uYou.dylib"
             stale_dylib.parent.mkdir(parents=True)
             stale_dylib.write_bytes(b"OLD FICTIONAL DYLIB")
-            stale_bundle = library / r"Application\ Support/uYouBundle.bundle"
+            stale_bundle = library / "Application Support" / "uYouBundle.bundle"
             stale_bundle.mkdir(parents=True)
             (stale_bundle / "Info.plist").write_text("Stale synthetic bundle")
             deb = self._build_deb(checkout, complete=False)
@@ -159,7 +159,11 @@ class DebianArExtractionTests(unittest.TestCase):
                 "incomplete authenticated archive passed because stale files satisfied the build checks",
             )
             self.assertEqual(stale_dylib.read_bytes(), b"OLD FICTIONAL DYLIB")
-            self.assertEqual((stale_bundle / "Info.plist").read_text(), "Stale synthetic bundle")
+            self.assertTrue(stale_bundle.is_dir())
+            self.assertEqual(
+                (stale_bundle / "Info.plist").read_text(),
+                "Stale synthetic bundle",
+            )
 
     @unittest.skipUnless(
         shutil.which("dpkg-deb") and shutil.which("make"),
