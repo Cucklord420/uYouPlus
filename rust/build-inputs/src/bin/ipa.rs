@@ -19,65 +19,85 @@ fn verify(path: &Path, expected: &str) -> Result<String, String> {
     let mut buffer = vec![0; 4 * 1024 * 1024];
     loop {
         let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hash.update(&buffer[..n]);
     }
     if !format!("{:x}", hash.finalize()).eq_ignore_ascii_case(expected) {
         return Err("IPA checksum mismatch; refusing extraction".into());
     }
     file.rewind().map_err(|e| e.to_string())?;
-    let mut archive=ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
     if archive.len() > 100_000 {
         return Err("Too many IPA archive entries".into());
     }
-    let mut seen=HashSet::new();
-    let mut total=0u64;
-    let mut manifest_index=None;
+    let mut seen = HashSet::new();
+    let mut total = 0u64;
+    let mut manifest_index = None;
     for index in 0..archive.len() {
-        let member=archive.by_index(index).map_err(|e| e.to_string())?;
-        let name=member.name().to_owned();
-        let parts:Vec<&str> = name.split('/').collect();
-        if name.is_empty() || name.starts_with('/') || name.contains('\\')
+        let member = archive.by_index(index).map_err(|e| e.to_string())?;
+        let name = member.name().to_owned();
+        let parts: Vec<&str> = name.split('/').collect();
+        if name.is_empty()
+            || name.starts_with('/')
+            || name.contains('\\')
             || name.contains('\0')
-            || parts[..parts.len().saturating_sub(1)].iter().any(|s| s.is_empty() || *s=="." || *s=="..")
+            || parts[..parts.len().saturating_sub(1)]
+                .iter()
+                .any(|s| s.is_empty() || *s == "." || *s == "..")
             || parts.contains(&"..")
             || parts.first().is_some_and(|s| s.contains(':'))
         {
             return Err("Unsafe IPA archive entry path".into());
         }
-        if member.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
+        if member
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
             return Err("IPA contains a symbolic link".into());
         }
-        let logical=name.trim_end_matches('/');
+        let logical = name.trim_end_matches('/');
         if !seen.insert(logical.to_owned()) {
             return Err("Duplicate IPA archive entry".into());
         }
-        total=total.checked_add(member.size()).ok_or("IPA decompressed size exceeds safety limit")?;
-        if total>8*1024*1024*1024 {
+        total = total
+            .checked_add(member.size())
+            .ok_or("IPA decompressed size exceeds safety limit")?;
+        if total > 8 * 1024 * 1024 * 1024 {
             return Err("IPA decompressed size exceeds safety limit".into());
         }
-        if member.size()>64*1024*1024 && member.compressed_size()==0 {
+        if member.size() > 64 * 1024 * 1024 && member.compressed_size() == 0 {
             return Err("Suspicious archive compression ratio".into());
         }
-        if member.compressed_size()!=0 && (member.size() as u128)>(member.compressed_size() as u128)*2000 {
+        if member.compressed_size() != 0
+            && (member.size() as u128) > (member.compressed_size() as u128) * 2000
+        {
             return Err("Suspicious archive compression ratio".into());
         }
-        if name=="Payload/YouTube.app/Info.plist" {
-            manifest_index=Some(index);
+        if name == "Payload/YouTube.app/Info.plist" {
+            manifest_index = Some(index);
         }
     }
-    let index=manifest_index.ok_or("Not a YouTube IPA: missing Info.plist")?;
-    let mut plist_file=archive.by_index(index).map_err(|e| e.to_string())?;
+    let index = manifest_index.ok_or("Not a YouTube IPA: missing Info.plist")?;
+    let mut plist_file = archive.by_index(index).map_err(|e| e.to_string())?;
     // Bound manifest read to avoid allocating massive attacker-controlled XML/plist.
-    let mut bytes=Vec::new();
-    plist_file.by_ref().take(4*1024*1024+1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-    if bytes.len()>4*1024*1024 { return Err("Info.plist exceeds safety limit".into()); }
-    let root=plist::Value::from_reader(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
-    let version=root.as_dictionary()
-        .and_then(|d|d.get("CFBundleVersion"))
+    let mut bytes = Vec::new();
+    plist_file
+        .by_ref()
+        .take(4 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err("Info.plist exceeds safety limit".into());
+    }
+    let root = plist::Value::from_reader(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    let version = root
+        .as_dictionary()
+        .and_then(|d| d.get("CFBundleVersion"))
         .and_then(plist::Value::as_string)
         .ok_or("Invalid YouTube CFBundleVersion")?;
-    let pattern=Regex::new(r"^[0-9]+(\.[0-9]+){1,4}$").unwrap();
+    let pattern = Regex::new(r"^[0-9]+(\.[0-9]+){1,4}$").unwrap();
     if !pattern.is_match(version) {
         return Err("Invalid YouTube CFBundleVersion".into());
     }
@@ -85,31 +105,37 @@ fn verify(path: &Path, expected: &str) -> Result<String, String> {
 }
 
 fn main() {
-    let mut args=std::env::args().skip(1);
-    if args.next().as_deref()!=Some("ipa") {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some("ipa") {
         eprintln!("Usage: ipa ipa --file PATH --sha256 HEX");
         std::process::exit(2);
     }
-    let mut path=None;
-    let mut sha=None;
-    while let Some(flag)=args.next() {
-        let Some(value)=args.next() else {
+    let mut path = None;
+    let mut sha = None;
+    while let Some(flag) = args.next() {
+        let Some(value) = args.next() else {
             eprintln!("Missing option value");
             std::process::exit(2);
         };
         match flag.as_str() {
-            "--file"=>path=Some(value),
-            "--sha256"=>sha=Some(value),
-            _=>{ eprintln!("Invalid option"); std::process::exit(2); }
+            "--file" => path = Some(value),
+            "--sha256" => sha = Some(value),
+            _ => {
+                eprintln!("Invalid option");
+                std::process::exit(2);
+            }
         }
     }
-    let Some((path,sha))=path.zip(sha) else {
+    let Some((path, sha)) = path.zip(sha) else {
         eprintln!("Missing required file or digest");
         std::process::exit(2);
     };
-    match verify(Path::new(&path),&sha) {
-        Ok(version)=>println!("{version}"),
-        Err(error)=>{eprintln!("Build input rejected: {error}");std::process::exit(1);}
+    match verify(Path::new(&path), &sha) {
+        Ok(version) => println!("{version}"),
+        Err(error) => {
+            eprintln!("Build input rejected: {error}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -120,17 +146,19 @@ mod tests {
     use std::process::Command;
     use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
-    const PLIST:&str = r#"<?xml version="1.0" encoding="UTF-8"?>
+    const PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>CFBundleVersion</key><string>19.25.4</string></dict></plist>"#;
 
-    fn fixture(extra: &[(&str,&[u8])]) -> (tempfile::TempDir,String) {
-        let directory=tempfile::tempdir().unwrap();
-        let path=directory.path().join("fixture.ipa");
-        let file=File::create(&path).unwrap();
-        let mut writer=ZipWriter::new(file);
-        let options=SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-        writer.start_file("Payload/YouTube.app/Info.plist",options).unwrap();
+    fn fixture(extra: &[(&str, &[u8])]) -> (tempfile::TempDir, String) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fixture.ipa");
+        let file = File::create(&path).unwrap();
+        let mut writer = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        writer
+            .start_file("Payload/YouTube.app/Info.plist", options)
+            .unwrap();
         writer.write_all(PLIST.as_bytes()).unwrap();
         // zip 8 refuses duplicate names during writing. Build a distinct, same-length
         // fixture name and then restore the duplicate in both ZIP filename records.
@@ -139,72 +167,96 @@ mod tests {
         const ALIAS: &str = "Payload/YouTube.app/Info.plisX";
         let duplicate = extra.iter().filter(|(name, _)| *name == NAME).count();
         assert!(duplicate <= 1);
-        for (name,data) in extra {
+        for (name, data) in extra {
             let fixture_name = if *name == NAME { ALIAS } else { name };
-            writer.start_file(fixture_name,options).unwrap();
+            writer.start_file(fixture_name, options).unwrap();
             writer.write_all(data).unwrap();
         }
         writer.finish().unwrap();
-        let mut contents=std::fs::read(&path).unwrap();
+        let mut contents = std::fs::read(&path).unwrap();
         if duplicate == 1 {
-            let positions: Vec<usize> = contents.windows(ALIAS.len())
+            let positions: Vec<usize> = contents
+                .windows(ALIAS.len())
                 .enumerate()
                 .filter_map(|(position, bytes)| (bytes == ALIAS.as_bytes()).then_some(position))
                 .collect();
-            assert_eq!(positions.len(), 2, "fixture ZIP local and central filenames");
+            assert_eq!(
+                positions.len(),
+                2,
+                "fixture ZIP local and central filenames"
+            );
             for position in positions {
                 contents[position..position + NAME.len()].copy_from_slice(NAME.as_bytes());
             }
             std::fs::write(&path, &contents).unwrap();
         }
-        (directory,format!("{:x}",Sha256::digest(&contents)))
+        (directory, format!("{:x}", Sha256::digest(&contents)))
     }
 
     #[test]
     fn validates_synthetic_ipa_and_checksum() {
-        let (temp,sha)=fixture(&[]);
-        let path=temp.path().join("fixture.ipa");
-        assert_eq!(verify(&path,&sha).unwrap(),"19.25.4");
-        assert!(verify(&path,&"f".repeat(64)).is_err());
+        let (temp, sha) = fixture(&[]);
+        let path = temp.path().join("fixture.ipa");
+        assert_eq!(verify(&path, &sha).unwrap(), "19.25.4");
+        assert!(verify(&path, &"f".repeat(64)).is_err());
     }
 
     #[test]
     fn rejects_unsafe_paths_and_duplicates() {
-        for name in ["../escape","Payload/../escape","Payload\\escape",
-            "Payload/YouTube.app/Info.plist","Payload/./bad","/absolute/path"] {
-            let (temp,sha)=fixture(&[(name,b"bad")]);
-            assert!(verify(&temp.path().join("fixture.ipa"),&sha).is_err(),"accepted {name}");
+        for name in [
+            "../escape",
+            "Payload/../escape",
+            "Payload\\escape",
+            "Payload/YouTube.app/Info.plist",
+            "Payload/./bad",
+            "/absolute/path",
+        ] {
+            let (temp, sha) = fixture(&[(name, b"bad")]);
+            assert!(
+                verify(&temp.path().join("fixture.ipa"), &sha).is_err(),
+                "accepted {name}"
+            );
         }
     }
 
     #[test]
     fn original_python_reports_equivalent_acceptance_on_synthetic_ipa() {
-        let python=std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let python = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../scripts/build_checks.py");
         for extras in [
-            Vec::<(&str,&[u8])>::new(),
-            vec![("../escape",b"x".as_slice())],
-            vec![("Payload/../escape",b"x".as_slice())],
-            vec![("Payload\\escape",b"x".as_slice())],
-            vec![("Payload/YouTube.app/Info.plist",b"x".as_slice())],
+            Vec::<(&str, &[u8])>::new(),
+            vec![("../escape", b"x".as_slice())],
+            vec![("Payload/../escape", b"x".as_slice())],
+            vec![("Payload\\escape", b"x".as_slice())],
+            vec![("Payload/YouTube.app/Info.plist", b"x".as_slice())],
         ] {
-            let (temp,sha)=fixture(&extras);
-            let path=temp.path().join("fixture.ipa");
-            let rust=verify(&path,&sha).is_ok();
-            let result=Command::new("python3").arg(&python).arg("ipa")
-                .arg("--file").arg(&path).arg("--sha256").arg(&sha)
-                .output().unwrap();
-            assert_eq!(rust,result.status.success(),"Mismatch with original: {extras:?}");
+            let (temp, sha) = fixture(&extras);
+            let path = temp.path().join("fixture.ipa");
+            let rust = verify(&path, &sha).is_ok();
+            let result = Command::new("python3")
+                .arg(&python)
+                .arg("ipa")
+                .arg("--file")
+                .arg(&path)
+                .arg("--sha256")
+                .arg(&sha)
+                .output()
+                .unwrap();
+            assert_eq!(
+                rust,
+                result.status.success(),
+                "Mismatch with original: {extras:?}"
+            );
         }
     }
 
     #[test]
     fn rejects_not_a_zip_without_touching_original() {
-        let dir=tempfile::tempdir().unwrap();
-        let file=dir.path().join("bad.ipa");
-        std::fs::write(&file,b"not a zip").unwrap();
-        let hash=format!("{:x}",Sha256::digest(b"not a zip"));
-        assert!(verify(&file,&hash).is_err());
-        assert_eq!(std::fs::read(file).unwrap(),b"not a zip");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bad.ipa");
+        std::fs::write(&file, b"not a zip").unwrap();
+        let hash = format!("{:x}", Sha256::digest(b"not a zip"));
+        assert!(verify(&file, &hash).is_err());
+        assert_eq!(std::fs::read(file).unwrap(), b"not a zip");
     }
 }
