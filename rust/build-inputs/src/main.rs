@@ -115,25 +115,59 @@ mod tests {
         let bundle = "com.google.ios.youtube";
         let app = "YouTube";
         let cases = [
-            (url,version,bundle,app,true),
-            ("https://downloads.example.org/my.ipa?token=abc&expires=123",version,bundle,app,true),
-            ("http://downloads.example.org/my.ipa",version,bundle,app,false),
-            ("https://user:pw@downloads.example.org/my.ipa",version,bundle,app,false),
-            ("https://localhost/my.ipa",version,bundle,app,false),
-            ("https://127.0.0.1/my.ipa",version,bundle,app,false),
-            ("https://host.internal/my.ipa",version,bundle,app,false),
-            ("https://downloads.example.org:8443/my.ipa",version,bundle,app,false),
-            ("https://downloads.example.org/my.ipa#archive",version,bundle,app,false),
-            ("https://downloads.example.org/my.ipa\ncommand",version,bundle,app,false),
-            (url,"3.0.3; touch /tmp/pwn",bundle,app,false),
-            (url,version,"com.example.youtube#evil",app,false),
-            (url,version,bundle,"YouTube$(touch abc)",false),
-            (url,version,bundle,"YouTube Test-1",true),
+            (url, version, bundle, app, true),
+            (
+                "https://downloads.example.org/my.ipa?token=abc&expires=123",
+                version,
+                bundle,
+                app,
+                true,
+            ),
+            ("http://downloads.example.org/my.ipa", version, bundle, app, false),
+            (
+                "https://user:pw@downloads.example.org/my.ipa",
+                version,
+                bundle,
+                app,
+                false,
+            ),
+            ("https://localhost/my.ipa", version, bundle, app, false),
+            ("https://127.0.0.1/my.ipa", version, bundle, app, false),
+            ("https://host.internal/my.ipa", version, bundle, app, false),
+            (
+                "https://downloads.example.org:8443/my.ipa",
+                version,
+                bundle,
+                app,
+                false,
+            ),
+            (
+                "https://downloads.example.org/my.ipa#archive",
+                version,
+                bundle,
+                app,
+                false,
+            ),
+            (
+                "https://downloads.example.org/my.ipa\\ncommand",
+                version,
+                bundle,
+                app,
+                false,
+            ),
+            (url, "3.0.3; touch /tmp/pwn", bundle, app, false),
+            (url, version, "com.example.youtube#evil", app, false),
+            (url, version, bundle, "YouTube$(touch abc)", false),
+            (url, version, bundle, "YouTube Test-1", true),
         ];
-        for (u,version,bundle,app,want) in cases {
-            assert_eq!(validate(u,&sha,version,bundle,app).is_ok(),want,"{u} {version}");
+        for (u, version, bundle, app, want) in cases {
+            assert_eq!(
+                validate(u, &sha, version, bundle, app).is_ok(),
+                want,
+                "{u} {version}"
+            );
         }
-        assert!(validate(url,"",version,bundle,app).is_err());
+        assert!(validate(url, "", version, bundle, app).is_err());
     }
 
     #[test]
@@ -153,22 +187,66 @@ mod tests {
             "https://downloads.example.org/a.ipa?token=abc",
         ];
         for url in cases {
-            let rust_ok = validate(url,&sha,"3.0.3","com.google.ios.youtube","YouTube").is_ok();
-            let original=Command::new("python3")
+            let rust_ok = validate(url, &sha, "3.0.3", "com.google.ios.youtube", "YouTube").is_ok();
+            let original = Command::new("python3")
                 .arg(&py)
-                .args(["inputs","--url",url,"--sha256",&sha,"--version","3.0.3",
-                    "--bundle","com.google.ios.youtube","--app","YouTube"])
-                .output().expect("Python comparator");
-            assert_eq!(rust_ok,original.status.success(),"Different behavior for {url}");
+                .args([
+                    "inputs",
+                    "--url",
+                    url,
+                    "--sha256",
+                    &sha,
+                    "--version",
+                    "3.0.3",
+                    "--bundle",
+                    "com.google.ios.youtube",
+                    "--app",
+                    "YouTube",
+                ])
+                .output()
+                .expect("Python comparator");
+            assert_eq!(
+                rust_ok,
+                original.status.success(),
+                "Different behavior for {url}"
+            );
         }
     }
 
     #[test]
     fn bad_hash_version_and_app_rejected() {
-        let valid_hash="a".repeat(64);
-        assert!(validate("https://files.example.org/test.ipa",&valid_hash,"1.2","com.app","Example").is_ok());
-        assert!(validate("https://files.example.org/test.ipa",&valid_hash[..63],"1.2","com.app","Example").is_err());
-        assert!(validate("https://files.example.org/test.ipa",&valid_hash,"1","com.app","Example").is_err());
-        assert!(validate("https://files.example.org/test.ipa",&valid_hash,"1.2.3.4.5.6","com.app","Example").is_err());
+        let valid_hash = "a".repeat(64);
+        assert!(validate(
+            "https://files.example.org/test.ipa",
+            &valid_hash,
+            "1.2",
+            "com.app",
+            "Example"
+        )
+        .is_ok());
+        assert!(validate(
+            "https://files.example.org/test.ipa",
+            &valid_hash[..63],
+            "1.2",
+            "com.app",
+            "Example"
+        )
+        .is_err());
+        assert!(validate(
+            "https://files.example.org/test.ipa",
+            &valid_hash,
+            "1",
+            "com.app",
+            "Example"
+        )
+        .is_err());
+        assert!(validate(
+            "https://files.example.org/test.ipa",
+            &valid_hash,
+            "1.2.3.4.5.6",
+            "com.app",
+            "Example"
+        )
+        .is_err());
     }
 }
