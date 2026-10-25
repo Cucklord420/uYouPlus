@@ -1,8 +1,8 @@
 # Rust port: uYou Debian authentication and extraction
 
-**Status:** The user approved the Rust port direction on 2026-10-25. The implementation is in progress on the existing PR #16 branch; exact-head CI is still required.
+**Status:** The user approved the Rust port direction on 2026-10-25. The implementation is in PR #16; code-head CI passed at `bc2b60ee0f73b8d6492e7d0f63ccfdc7c1d7137a`.
 
-**Scope:** Cucklord420/uYouPlus PR #16, branch `fix/debian-ar-extraction-on-pr13-20261022`. The design was reviewed on branch head `7309e3f878be7119ee48aae87147bb115ee86f1e` and is being implemented on that branch.
+**Scope:** Cucklord420/uYouPlus PR #16, branch `fix/debian-ar-extraction-on-pr13-20261022`. The design was reviewed on branch head `7309e3f878be7119ee48aae87147bb115ee86f1e`; implementation and regressions are on the same branch.
 
 ## Problem and policy
 
@@ -68,3 +68,11 @@ This design does not establish an authentic digest for any particular upstream u
 ## Rollback
 
 If implementation or compatibility evidence fails, revert the Rust binary integration and restore the prior reviewed branch state. A rollback also removes this proposed authentication and extraction protection, so the P1 supply-chain gap must remain tracked and open. Do not publish a release or perform a deployment as part of the port.
+
+## Implementation verification — 2026-10-25
+
+- The regression-only head `bccdde2e0d3d3472e9afdeb9f886f1ecf7f0f1e2` reached the new Rust tests and failed because the `uyou-deb` executable had not yet been implemented (source run [40231338856](https://github.com/Cucklord420/uYouPlus/actions/runs/40231338856)). The separate Debian workflow passed its then-current tests on that test-only head.
+- Implementation head `59e55f3dabdbae1eb449a95ee683464341cf3460` passed all Rust unit/integration tests and the Debian extraction workflow, but source validation caught rustfmt differences. Formatting was corrected in `bc2b60ee0f73b8d6492e7d0f63ccfdc7c1d7137a`.
+- At `bc2b60ee0f73b8d6492e7d0f63ccfdc7c1d7137a`, source validation [run 40232358443](https://github.com/Cucklord420/uYouPlus/actions/runs/40232358443) passed, including the existing IPA/workflow Python tests, Cargo tests, rustfmt, strict Clippy, shell syntax, and manifest checks. Synthetic Debian and Make integration [run 40232358423](https://github.com/Cucklord420/uYouPlus/actions/runs/40232358423) also passed.
+- The local executor has no Cargo, Rust compiler, or Python; the above GitHub-hosted runs are the observed validation. No authentic uYou `.deb`, proprietary IPA, Theos package build, or device installation was used.
+- PR #16 remains Draft. Independent vendor-digest provenance, independent security review, and authorized macOS/Theos compatibility evidence remain outstanding.
