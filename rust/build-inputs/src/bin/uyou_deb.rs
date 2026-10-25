@@ -30,11 +30,13 @@ fn validate_version(value: &str) -> Result<()> {
     let bytes = value.as_bytes();
     if !(1..=40).contains(&bytes.len())
         || !bytes.first().is_some_and(|byte| byte.is_ascii_digit())
-        || !bytes.iter().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b'+' | b'-')
-        })
+        || !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b'+' | b'-'))
     {
-        return Err("uYou package version must be 1-40 safe ASCII characters beginning with a digit".into());
+        return Err(
+            "uYou package version must be 1-40 safe ASCII characters beginning with a digit".into(),
+        );
     }
     Ok(())
 }
@@ -76,7 +78,8 @@ fn verify_package(expected_sha256: &str, path: &Path) -> Result<()> {
         return Err("uYou package exceeds the 512 MiB size limit".into());
     }
 
-    let mut file = File::open(path).map_err(|error| format!("cannot read uYou package: {error}"))?;
+    let mut file =
+        File::open(path).map_err(|error| format!("cannot read uYou package: {error}"))?;
     if !file
         .metadata()
         .map_err(|error| format!("cannot inspect uYou package: {error}"))?
@@ -308,7 +311,9 @@ fn require_directory(path: &Path, description: &str) -> Result<()> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|_| format!("required uYou package directory is missing: {description}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(format!("required uYou package path is not a real directory: {description}"));
+        return Err(format!(
+            "required uYou package path is not a real directory: {description}"
+        ));
     }
     Ok(())
 }
@@ -317,7 +322,9 @@ fn require_regular_file(path: &Path, description: &str) -> Result<()> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|_| format!("required uYou package file is missing: {description}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(format!("required uYou package path is not a regular file: {description}"));
+        return Err(format!(
+            "required uYou package path is not a regular file: {description}"
+        ));
     }
     Ok(())
 }
@@ -359,11 +366,7 @@ fn create_temporary_directory(parent: &Path, prefix: &str) -> Result<TemporaryDi
     Err("cannot allocate a unique staging directory".into())
 }
 
-fn promote_library_with<F>(
-    staged_library: &Path,
-    build_dir: &Path,
-    rename: &mut F,
-) -> Result<()>
+fn promote_library_with<F>(staged_library: &Path, build_dir: &Path, rename: &mut F) -> Result<()>
 where
     F: FnMut(&Path, &Path) -> io::Result<()>,
 {
@@ -381,7 +384,10 @@ where
     };
 
     let mut backup_directory = if previous {
-        Some(create_temporary_directory(build_dir, ".uyou-library-backup-")?)
+        Some(create_temporary_directory(
+            build_dir,
+            ".uyou-library-backup-",
+        )?)
     } else {
         None
     };
@@ -444,7 +450,9 @@ fn extract_package(build_dir: &Path, version: &str, expected_sha256: &str) -> Re
 
     let staged_library = stage.path.join("Library");
     validate_payload(&staged_library)?;
-    promote_library_with(&staged_library, build_dir, &mut |from, to| fs::rename(from, to))
+    promote_library_with(&staged_library, build_dir, &mut |from, to| {
+        fs::rename(from, to)
+    })
 }
 
 fn read_option(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {

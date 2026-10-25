@@ -12,8 +12,16 @@ fn tool_path() -> PathBuf {
     let mut path = env::current_exe().expect("integration test executable path");
     path.pop(); // deps
     path.pop(); // debug or release
-    path.push(if cfg!(windows) { "uyou-deb.exe" } else { "uyou-deb" });
-    assert!(path.is_file(), "uYou Debian Rust executable was built at {}", path.display());
+    path.push(if cfg!(windows) {
+        "uyou-deb.exe"
+    } else {
+        "uyou-deb"
+    });
+    assert!(
+        path.is_file(),
+        "uYou Debian Rust executable was built at {}",
+        path.display()
+    );
     path
 }
 
@@ -39,7 +47,11 @@ fn run_ensure(directory: &Path, version: &str, sha256: &str) -> Output {
 }
 
 fn build_synthetic_deb(root: &Path, complete: bool) -> PathBuf {
-    let source = root.join(if complete { "complete-package" } else { "incomplete-package" });
+    let source = root.join(if complete {
+        "complete-package"
+    } else {
+        "incomplete-package"
+    });
     let control = source.join("DEBIAN");
     fs::create_dir_all(&control).unwrap();
     fs::write(
@@ -60,7 +72,11 @@ fn build_synthetic_deb(root: &Path, complete: bool) -> PathBuf {
         fs::write(unrelated, b"This archive has no uYou payload").unwrap();
     }
 
-    let archive = root.join(if complete { "complete.deb" } else { "incomplete.deb" });
+    let archive = root.join(if complete {
+        "complete.deb"
+    } else {
+        "incomplete.deb"
+    });
     let output = Command::new("dpkg-deb")
         .arg("--build")
         .arg(&source)
@@ -113,8 +129,7 @@ fn make_executable() -> Option<&'static str> {
         .output()
         .ok()
         .filter(|output| {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout).contains("GNU Make")
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("GNU Make")
         })
         .map(|_| "make")
 }
@@ -202,7 +217,10 @@ fn validate_rejects_missing_or_malformed_digest_and_version() {
             .env("UYOU_DEB_SHA256", &digest)
             .output()
             .expect("run uyou-deb validate");
-        assert!(!output.status.success(), "accepted version={version:?} digest={digest:?}");
+        assert!(
+            !output.status.success(),
+            "accepted version={version:?} digest={digest:?}"
+        );
     }
 }
 
@@ -254,7 +272,10 @@ fn ensure_rejects_directory_at_cached_package_path() {
 
     let output = run_ensure(directory.path(), VALID_VERSION, &"a".repeat(64));
 
-    assert!(!output.status.success(), "accepted a directory as a package");
+    assert!(
+        !output.status.success(),
+        "accepted a directory as a package"
+    );
 }
 
 #[test]
@@ -282,7 +303,10 @@ fn ensure_rejects_a_symlinked_cached_package() {
 
     let output = run_ensure(directory.path(), VALID_VERSION, &digest(SYNTHETIC_AR));
 
-    assert!(!output.status.success(), "accepted a symlink as the cached package");
+    assert!(
+        !output.status.success(),
+        "accepted a symlink as the cached package"
+    );
 }
 
 #[cfg(unix)]
@@ -299,7 +323,10 @@ fn ensure_rejects_a_symlinked_package_parent() {
 
     let output = run_ensure(&linked, VALID_VERSION, &digest(SYNTHETIC_AR));
 
-    assert!(!output.status.success(), "accepted a symlinked package parent");
+    assert!(
+        !output.status.success(),
+        "accepted a symlinked package parent"
+    );
 }
 
 #[test]
@@ -313,7 +340,12 @@ fn ensure_downloads_only_verified_bytes_and_leaves_no_temporary_file() {
     let output = tool()
         .args(["ensure", "--build-dir"])
         .arg(directory.path())
-        .args(["--version", VALID_VERSION, "--sha256", &digest(SYNTHETIC_AR)])
+        .args([
+            "--version",
+            VALID_VERSION,
+            "--sha256",
+            &digest(SYNTHETIC_AR),
+        ])
         .env("PATH", path_with(&fake_bin))
         .env("SYNTHETIC_DEB", &source)
         .output()
@@ -396,7 +428,12 @@ fn ensure_failed_download_never_publishes_partial_bytes() {
     let output = tool()
         .args(["ensure", "--build-dir"])
         .arg(directory.path())
-        .args(["--version", VALID_VERSION, "--sha256", &digest(SYNTHETIC_AR)])
+        .args([
+            "--version",
+            VALID_VERSION,
+            "--sha256",
+            &digest(SYNTHETIC_AR),
+        ])
         .env("PATH", path_with(&fake_bin))
         .env("SYNTHETIC_DEB", &source)
         .env("SYNTHETIC_CURL_FAILURE", "1")
@@ -429,7 +466,12 @@ fn ensure_does_not_clobber_a_competing_cache_entry() {
     let output = tool()
         .args(["ensure", "--build-dir"])
         .arg(directory.path())
-        .args(["--version", VALID_VERSION, "--sha256", &digest(SYNTHETIC_AR)])
+        .args([
+            "--version",
+            VALID_VERSION,
+            "--sha256",
+            &digest(SYNTHETIC_AR),
+        ])
         .env("PATH", path_with(&fake_bin))
         .env("SYNTHETIC_DEB", &source)
         .env("SYNTHETIC_CACHE_SOURCE", &competing)
@@ -509,7 +551,12 @@ fn extract_replaces_stale_payload_only_with_a_complete_archive() {
     let output = tool()
         .args(["extract", "--build-dir"])
         .arg(directory.path())
-        .args(["--version", VALID_VERSION, "--sha256", &digest(&fs::read(&package).unwrap())])
+        .args([
+            "--version",
+            VALID_VERSION,
+            "--sha256",
+            &digest(&fs::read(&package).unwrap()),
+        ])
         .output()
         .expect("run uyou-deb extract");
 
@@ -522,8 +569,13 @@ fn extract_replaces_stale_payload_only_with_a_complete_archive() {
         fs::read(library.join("MobileSubstrate/DynamicLibraries/uYou.dylib")).unwrap(),
         b"NEW FICTIONAL DYLIB; NO PROPRIETARY MATERIAL"
     );
-    assert!(library.join("Application Support/uYouBundle.bundle/Info.plist").is_file());
-    assert!(!stale_extra.exists(), "stale payload survived full replacement");
+    assert!(library
+        .join("Application Support/uYouBundle.bundle/Info.plist")
+        .is_file());
+    assert!(
+        !stale_extra.exists(),
+        "stale payload survived full replacement"
+    );
 }
 
 #[test]
@@ -546,7 +598,12 @@ fn extract_rejects_incomplete_archive_and_preserves_the_old_payload() {
     let output = tool()
         .args(["extract", "--build-dir"])
         .arg(directory.path())
-        .args(["--version", VALID_VERSION, "--sha256", &digest(&fs::read(&package).unwrap())])
+        .args([
+            "--version",
+            VALID_VERSION,
+            "--sha256",
+            &digest(&fs::read(&package).unwrap()),
+        ])
         .output()
         .expect("run uyou-deb extract");
 
@@ -566,7 +623,10 @@ fn extract_fails_closed_when_the_cached_package_is_missing() {
         .output()
         .expect("run uyou-deb extract");
 
-    assert!(!output.status.success(), "extraction succeeded without a package");
+    assert!(
+        !output.status.success(),
+        "extraction succeeded without a package"
+    );
 }
 
 #[test]
@@ -590,8 +650,14 @@ fn make_rejects_unvalidated_version_before_expanding_make_expressions() {
         .output()
         .expect("run GNU make");
 
-    assert!(!output.status.success(), "unvalidated make invocation was accepted");
-    assert!(!marker.exists(), "GNU make expanded the unvalidated version");
+    assert!(
+        !output.status.success(),
+        "unvalidated make invocation was accepted"
+    );
+    assert!(
+        !marker.exists(),
+        "GNU make expanded the unvalidated version"
+    );
 }
 
 #[test]
@@ -666,7 +732,9 @@ fn jailbroken_make_path_needs_no_debian_digest_or_preflight_marker() {
         "jailbroken Make path failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(staging.join("Library/Application Support/uYouPlus.bundle").is_dir());
+    assert!(staging
+        .join("Library/Application Support/uYouPlus.bundle")
+        .is_dir());
 }
 
 #[test]
