@@ -38,12 +38,37 @@ fn validate(
     {
         return Err("URL contains spaces or control characters");
     }
+    // The URL parser canonicalizes percent-encoded and internationalized hostnames.
+    // Check the original authority first so rejected Python inputs cannot become
+    // apparently valid public DNS names through that normalization.
+    let (_, after_scheme) = url.split_once("://").ok_or("Invalid IPA URL")?;
+    let raw_authority = after_scheme
+        .split(&['/', '?', '#'][..])
+        .next()
+        .unwrap_or("");
+    if raw_authority.is_empty()
+        || raw_authority
+            .chars()
+            .any(|ch| !ch.is_ascii() || ch == '%' || ch == '\\')
+    {
+        return Err("Invalid public DNS hostname");
+    }
+    // Python urlsplit() validates the original path. Url::parse normalizes
+    // terminal /./ and /../ segments, which can change the file-path check.
+    let path_and_suffix = &after_scheme[raw_authority.len()..];
+    let raw_path = path_and_suffix
+        .split(&['?', '#'][..])
+        .next()
+        .unwrap_or("");
+    if raw_path.is_empty() || raw_path.ends_with('/') {
+        return Err("IPA URL must point to a file");
+    }
     let parsed = Url::parse(url).map_err(|_| "Invalid IPA URL")?;
     if parsed.scheme() != "https"
         || parsed.host().is_none()
         || !parsed.username().is_empty()
         || parsed.password().is_some()
-        || parsed.fragment().is_some()
+        || parsed.fragment().is_some_and(|fragment| !fragment.is_empty())
     {
         return Err("IPA URL must use HTTPS without credentials or fragments");
     }
@@ -68,9 +93,6 @@ fn validate(
         || hostname.split('.').any(|part| !valid(label, part))
     {
         return Err("Invalid public DNS hostname");
-    }
-    if parsed.path().is_empty() || parsed.path().ends_with('/') {
-        return Err("IPA URL must point to a file");
     }
     Ok(())
 }
@@ -211,6 +233,16 @@ mod tests {
             "https://downloads.example.org/a.ipa#fragment",
             "https://downloads.example.org/",
             "https://downloads.example.org/a.ipa?token=abc",
+            "https://downloads.example.org/a.ipa#",
+            "https://downloads.example.org/a/.",
+            "https://downloads.example.org/a/..",
+            "https://downloads.example.org/.",
+            "https://downloads.example.org/a/../",
+            "https://ex%61mple.org/test.ipa",
+            "https://bücher.example.org/test.ipa",
+            "https://exa\\\\mple.org/test.ipa",
+            "https:downloads.example.org/test.ipa",
+            "https://downloads.example.org/%66ile.ipa?token=abc",
         ];
         for url in cases {
             let rust_ok = validate(url, &sha, "3.0.3", "com.google.ios.youtube", "YouTube").is_ok();
@@ -236,6 +268,38 @@ mod tests {
                 original.status.success(),
                 "Different behavior for {url}"
             );
+        }
+    }
+
+    #[test]
+    fn url_normalization_edges_match_original_python_entrypoint() {
+        let py = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/build_checks.py");
+        let sha = "f".repeat(64);
+        let cases = [
+            ("https://ex%61mple.org/test.ipa", false),
+            ("https://bücher.example.org/test.ipa", false),
+            ("https://exa\\\\mple.org/test.ipa", false),
+            ("https:downloads.example.org/test.ipa", false),
+            ("https://downloads.example.org/a/.", true),
+            ("https://downloads.example.org/a/..", true),
+            ("https://downloads.example.org/.", true),
+            ("https://downloads.example.org/a/../", false),
+            ("https://downloads.example.org/a.ipa#", true),
+            ("https://downloads.example.org/%66ile.ipa?token=abc", true),
+        ];
+        for (url, expected) in cases {
+            let rust_ok = validate(url, &sha, "3.0.3", "com.google.ios.youtube", "YouTube").is_ok();
+            let original = Command::new("python3")
+                .arg(&py)
+                .args([
+                    "inputs", "--url", url, "--sha256", &sha, "--version", "3.0.3",
+                    "--bundle", "com.google.ios.youtube", "--app", "YouTube",
+                ])
+                .output()
+                .expect("Python comparator");
+            assert_eq!(rust_ok, original.status.success(), "Different behavior for {url}");
+            assert_eq!(rust_ok, expected, "Unexpected validation result for {url}");
         }
     }
 
