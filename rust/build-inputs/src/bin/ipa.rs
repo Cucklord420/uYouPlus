@@ -5,7 +5,7 @@ use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
@@ -110,6 +110,7 @@ fn verified_archive(path: &Path, expected: &str) -> Result<(ZipArchive<File>, St
     if bytes.len() > 4 * 1024 * 1024 {
         return Err("Info.plist exceeds safety limit".into());
     }
+    drop(plist_file);
     let root = plist::Value::from_reader(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
     let version = root
         .as_dictionary()
