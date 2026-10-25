@@ -40,7 +40,7 @@
 - [x] Run the new integration test against the current CLI and confirm it fails specifically because preparation arguments are not supported.
 - [x] Add negative integration cases for an unexpected member and pre-existing destination; assert the checkout marker and destination contents remain unchanged.
 - [x] Implement full validation before creating staging or destination paths; reject existing paths without following symlinks; extract only the app subtree; preserve safe permission bits; copy only the staged app bundle.
-- [ ] Run focused Rust tests, then the complete Cargo suite.
+- [x] Run focused Rust tests, then the complete Cargo suite.
 
 ### Task 2: Rust-only regression and workflow coverage
 
@@ -59,7 +59,7 @@
 - [x] Add Rust workflow-policy coverage for manual opt-in, validate-before-build, least-privilege publish separation, pinned actions, secure redirects, and the Rust prepare command.
 - [x] Update the workflow to call Rust preparation and remove Python test execution, `unzip`, `cp -R`, and redundant shell path checks.
 - [x] Remove the superseded Python validator/tests only after equivalent Rust coverage exists; remove Python differential invocations from Rust tests.
-- [ ] Run Rust tests, formatting, strict Clippy, and workflow shell/action validation.
+- [x] Run Rust tests, formatting, strict Clippy, and workflow shell/action validation.
 
 ### Task 3: Review and exact-head verification
 
@@ -67,8 +67,8 @@
 - Modify: `README.md` only if the existing build-isolation explanation needs correction.
 - Modify: existing PR #14 body and RustyNuts #48 tracker after code and CI are final.
 
-- [ ] Inspect the final diff and ensure only IPA isolation files and this plan/spec changed.
-- [ ] Run exact-head Linux and Windows CI; read every job result.
+- [x] Inspect the final diff and ensure only IPA isolation files and this plan/spec changed.
+- [x] Run exact-head Linux source CI and read every job result. The repository does not configure Windows CI; local Windows compilation remains unavailable because `link.exe` is absent.
 - [ ] Refresh PR #14, issue #48, reviews, branch head, and CI immediately before updating their GitHub descriptions.
-- [ ] Keep PR #14 Draft and issue #48 open while macOS/Theos compatibility and independent security review are still missing.
+- [x] Keep PR #14 Draft and issue #48 open while macOS/Theos compatibility and independent security review are still missing.
 - [ ] Record the exact head, CI runs, and remaining external validation in PR #14 and RustyNuts #48.
