@@ -240,7 +240,7 @@ mod tests {
             "https://downloads.example.org/a/../",
             "https://ex%61mple.org/test.ipa",
             "https://bücher.example.org/test.ipa",
-            "https://exa\\\\mple.org/test.ipa",
+            "https://exa\\mple.org/test.ipa",
             "https:downloads.example.org/test.ipa",
             "https://downloads.example.org/%66ile.ipa?token=abc",
         ];
@@ -279,7 +279,7 @@ mod tests {
         let cases = [
             ("https://ex%61mple.org/test.ipa", false),
             ("https://bücher.example.org/test.ipa", false),
-            ("https://exa\\\\mple.org/test.ipa", false),
+            ("https://exa\\mple.org/test.ipa", false),
             ("https:downloads.example.org/test.ipa", false),
             ("https://downloads.example.org/a/.", true),
             ("https://downloads.example.org/a/..", true),
