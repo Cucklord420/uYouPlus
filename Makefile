@@ -1,3 +1,9 @@
+ifneq ($(JAILBROKEN),1)
+ifneq ($(UYOU_DEB_INPUTS_VALIDATED),1)
+$(error Run the Rust uyou-deb validate command before invoking a non-jailbroken Make build)
+endif
+endif
+
 export TARGET = iphone:clang:latest:14.0
 export ARCHS = arm64
 
@@ -46,9 +52,7 @@ REMOVE_EXTENSIONS = 1
 CODESIGN_IPA = 0
 
 UYOU_PATH = Tweaks/uYou
-UYOU_DEB = $(UYOU_PATH)/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb
-UYOU_DYLIB = $(UYOU_PATH)/Library/MobileSubstrate/DynamicLibraries/uYou.dylib
-UYOU_BUNDLE = $(UYOU_PATH)/Library/Application Support/uYouBundle.bundle
+UYOU_DEB_COMMAND ?= cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb --
 
 export UYOU_VERSION
 
@@ -58,26 +62,10 @@ internal-clean::
 ifneq ($(JAILBROKEN),1)
 # Check the operator-reviewed digest BEFORE cleaning, downloading or unpacking.
 before-all::
-	@python3 scripts/verify_uyou_deb.py --sha256 "$$UYOU_DEB_SHA256" --version "$$UYOU_VERSION"
+	@$(UYOU_DEB_COMMAND) ensure --build-dir "$(UYOU_PATH)" --version "$$UYOU_VERSION" --sha256 "$$UYOU_DEB_SHA256"
 
 before-all::
-	@set -eu; \
-	if [ ! -f "$(UYOU_DEB)" ]; then \
-		mkdir -p "$(UYOU_PATH)"; \
-		tmp=$$(mktemp "$(UYOU_DEB).download.XXXXXXXX"); \
-		trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
-		curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
-			--max-redirs 5 --connect-timeout 30 --max-time 600 --max-filesize 536870912 --retry 2 \
-			--output "$$tmp" "https://repo.miro92.com/debs/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb"; \
-		python3 scripts/verify_uyou_deb.py --file "$$tmp" --sha256 "$$UYOU_DEB_SHA256" --version "$$UYOU_VERSION"; \
-		mv -f "$$tmp" "$(UYOU_DEB)"; \
-		trap - EXIT HUP INT TERM; \
-	fi; \
-	python3 scripts/verify_uyou_deb.py --file "$(UYOU_DEB)" --sha256 "$$UYOU_DEB_SHA256" --version "$$UYOU_VERSION"; \
-	python3 scripts/extract_uyou_deb.py --file "$(UYOU_DEB)" --destination "$(UYOU_PATH)"; \
-	if [ ! -f "$(UYOU_DYLIB)" ] || [ ! -d "$(UYOU_BUNDLE)" ]; then \
-		echo "Failed to verify extracted uYou files" >&2; exit 1; \
-	fi;
+	@$(UYOU_DEB_COMMAND) extract --build-dir "$(UYOU_PATH)" --version "$$UYOU_VERSION" --sha256 "$$UYOU_DEB_SHA256"
 else
 before-package::
 	@mkdir -p $(THEOS_STAGING_DIR)/Library/Application\ Support; cp -r Localizations/uYouPlus.bundle $(THEOS_STAGING_DIR)/Library/Application\ Support/

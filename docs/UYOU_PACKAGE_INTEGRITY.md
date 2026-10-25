@@ -1,14 +1,22 @@
 # uYou Debian package trust boundary
 
-The build embeds code from a third-party `com.miro.uyou_<version>_iphoneos-arm.deb` archive. A valid HTTPS URL or versioned filename **does not authenticate its bytes**. The existing SHA-256 input for the decrypted YouTube IPA is unrelated to this dependency.
+The build embeds code from the third-party `com.miro.uyou_<version>_iphoneos-arm.deb` archive. A valid HTTPS URL or versioned filename **does not authenticate its bytes**. The SHA-256 input for the decrypted YouTube IPA is unrelated to this dependency.
 
-Before any non-jailbroken build, independently establish and review the expected SHA-256 of the exact uYou Debian archive. Obtain it from a trustworthy release record or trusted, independently verified artifact. **Do not derive the approved digest from the same untrusted download during the build.** Do not invent a digest.
+Before a non-jailbroken build, independently obtain and review the SHA-256 of the exact uYou Debian archive. Use a trustworthy release record or trusted, independently verified artifact. **Do not derive the approved digest from the same untrusted download during the build.** Do not invent a digest.
 
-- GitHub Actions: provide `uyou_deb_sha256` in the manual workflow alongside the existing YouTube IPA hash.
-- Local build: export `UYOU_DEB_SHA256` with that reviewed 64-hex-digit value before invoking `./build.sh`. Local build and CI reject an absent or invalid value.
-- Package versions are restricted to a 1–40 character ASCII value beginning with a digit. The verifier also rejects a package file located under a symlinked parent directory.
-- Cached packages are rechecked, downloads are limited to HTTPS with bounded time/size, and the archive hash is validated before package extraction. A mismatch or missing hash intentionally stops the build.
-- Debian `.deb` files are outer `ar` archives, not standalone TAR files. After digest verification, `scripts/extract_uyou_deb.py` runs `dpkg-deb --extract` in a fresh temporary directory separate from the build destination. It checks the required dylib and bundle in that staged tree, then replaces the complete build `Library` payload only after validation, so stale files cannot make an incomplete package appear valid. The macOS workflow installs `dpkg`; local builds also need `dpkg-deb`. Synthetic regressions use fictional `.deb` archives.
-- The synthetic offline tests exercise hash mismatch, error bodies, symlinks, empty/oversized packages and the CI/Makefile gate. They **do not** establish the authenticity of a particular upstream archive, prove the entire package is safe, execute Theos, or test on an installed iPhone.
+- GitHub Actions requires the separate `uyou_deb_sha256` input and validates it with the Rust `uyou-deb` command before invoking Make.
+- Local builds use `UYOU_DEB_SHA256` and the `UYOU_VERSION` variable. The preflight validates both before the Makefile can expand the version. For the default local version, run:
 
-This change intentionally makes unauthenticated existing build commands fail closed. Reviewers must check the upstream digest's independent provenance and test the actual macOS build before marking the protection complete. The rest of the dependency/toolchain and IPA extraction boundary require their own review.
+  ```sh
+  export UYOU_VERSION="${UYOU_VERSION:-3.0.3}"
+  cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb -- validate &&
+    UYOU_DEB_INPUTS_VALIDATED=1 ./build.sh
+  ```
+
+- Package versions are restricted to 1–40 safe ASCII characters beginning with a digit. Package paths and cached files must be real directories and regular files; symlinked package parents and files are rejected.
+- The Rust command rechecks cached packages, downloads only from the fixed HTTPS release URL with HTTPS-only redirects, bounded time/size, and retries, and verifies the SHA-256 before no-clobber cache promotion.
+- Debian `.deb` files are outer `ar` archives, not standalone TAR files. After digest verification, Rust invokes `dpkg-deb --extract` into a fresh staging directory beside the build payload. It checks the required dylib and bundle in that staged tree, then replaces the existing `Library` directory with backup-and-restore handling. Stale files cannot satisfy staged-payload checks.
+- `JAILBROKEN=1` continues to bypass the Debian digest and preflight because that path does not download or extract the package. Its localization packaging behavior remains available.
+- Rust regressions use fictional `.deb` archives and an offline Rust `curl` fixture. They cover digest and archive rejection, symlink boundaries, bounded downloads, cache promotion, stale-payload replacement, failed replacement preservation, Makefile preflight order, and the jailbroken path.
+
+These checks do **not** establish the authenticity of a particular upstream archive, prove the entire package is safe, execute Theos, establish redistribution rights, or test an installed iPhone. Independent vendor-digest provenance, security review, and an authorized macOS/Theos compatibility build remain required before merge.

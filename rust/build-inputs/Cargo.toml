@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[[bin]]
+name = "uyou-deb"
+path = "src/bin/uyou_deb.rs"
+
 [dependencies]
 regex = "1"
 url = "2"

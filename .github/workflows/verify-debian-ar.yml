@@ -4,7 +4,10 @@ on:
   pull_request:
     paths:
       - Makefile
-      - tests/test_debian_ar_extraction.py
+      - rust/build-inputs/Cargo.toml
+      - rust/build-inputs/src/bin/uyou_deb.rs
+      - rust/build-inputs/tests/uyou_deb.rs
+      - rust/build-inputs/tests/fixtures/fake_curl.rs
       - .github/workflows/verify-debian-ar.yml
   workflow_dispatch:
 
@@ -20,5 +23,5 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Synthetic Debian ar extraction and Makefile ordering
-        run: python3 -m unittest discover -s tests -p 'test_debian_ar_extraction.py' -v
+      - name: Synthetic Debian ar extraction and Rust Makefile integration
+        run: cargo test --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb --test uyou_deb

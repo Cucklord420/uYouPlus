@@ -1,8 +1,8 @@
-# Proposed Rust port: uYou Debian authentication and extraction
+# Rust port: uYou Debian authentication and extraction
 
-**Status:** Design proposal; implementation is gated on the user approving this design.
+**Status:** The user approved the Rust port direction on 2026-10-25. The implementation is in progress on the existing PR #16 branch; exact-head CI is still required.
 
-**Scope:** Cucklord420/uYouPlus PR #16, branch `fix/debian-ar-extraction-on-pr13-20261022`. Reviewed implementation head: `0bd2ecee9c40e0d720cd400ec56a340793667e9f`; this design document is on the same branch.
+**Scope:** Cucklord420/uYouPlus PR #16, branch `fix/debian-ar-extraction-on-pr13-20261022`. The design was reviewed on branch head `7309e3f878be7119ee48aae87147bb115ee86f1e` and is being implemented on that branch.
 
 ## Problem and policy
 
@@ -10,7 +10,7 @@ PR #16 addresses a real supply-chain and archive-format gap: a versioned HTTPS U
 
 The port must preserve the fail-closed digest gate, bounded download, correct Debian extraction, staged payload validation, replacement rollback, and PR #15's transferred safeguards. It must not invent or supply a vendor digest.
 
-## Proposed approach
+## Implementation choices
 
 Add a `uyou-deb` Rust binary to the existing `rust/build-inputs` Cargo package. Keep the package's current Rust 2021 edition and use its existing `sha2` dependency. Avoid adding a new runtime dependency unless implementation proves one is needed.
 
@@ -36,7 +36,7 @@ The guard and digest validation apply only when `JAILBROKEN` is not `1`. The exi
 
 Update `docs/UYOU_PACKAGE_INTEGRITY.md` to document the Rust entry points, the local version default and shared-environment invocation, while retaining the independent-digest warning. Existing Python tests for the pre-existing IPA-input behavior remain in place; the new Python uYou scripts and three uYou-specific Python test modules will be removed only after their behavior is covered by Rust tests.
 
-The existing crate has edition 2021, no `rust-toolchain.toml`, and no `Cargo.lock` on the reviewed branch. Implementation will confirm the repository's lockfile/reproducibility policy before changing dependency state. It will not add dependencies merely to make this port easier.
+The existing crate uses edition 2021, has no `rust-toolchain.toml`, and has no `Cargo.lock` on the reviewed branch. The port reuses the existing dependencies and adds no dependency or lockfile.
 
 ## Regression coverage to preserve in Rust
 

@@ -71,7 +71,7 @@ jobs:
         env:
           UYOU_DEB_SHA256: ${{ inputs.uyou_deb_sha256 }}
           UYOU_VERSION: ${{ inputs.uyou_version }}
-        run: python3 scripts/verify_uyou_deb.py --sha256 "$UYOU_DEB_SHA256" --version "$UYOU_VERSION"
+        run: cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb -- validate
       - name: Validate operator-supplied build settings
         env:
           IPA_URL: ${{ inputs.decrypted_youtube_url }}
@@ -188,10 +188,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p theos/lib/iphone/rootless
-          cd ${{ github.workspace }}/main
+          cd "${{ github.workspace }}/main"
+          cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb -- validate
           sed -i '' "s#^BUNDLE_ID = .*#BUNDLE_ID = $BUNDLE_ID#" Makefile
           sed -i '' "s#^DISPLAY_NAME = .*#DISPLAY_NAME = $APP_NAME#" Makefile          
-          make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
+          UYOU_DEB_INPUTS_VALIDATED=1 make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
           shopt -s nullglob
           packages=(packages/*.ipa)
           test "${#packages[@]}" -eq 1 || { echo 'Expected exactly one built IPA'; exit 1; }

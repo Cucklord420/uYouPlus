@@ -36,6 +36,12 @@ fn main() {
     if let Some(marker) = env::var_os("SYNTHETIC_CURL_MARKER") {
         File::create(marker).expect("create invocation marker");
     }
+    if let (Some(source), Some(destination)) = (
+        env::var_os("SYNTHETIC_CACHE_SOURCE"),
+        env::var_os("SYNTHETIC_CACHE_DESTINATION"),
+    ) {
+        std::fs::copy(source, destination).expect("publish synthetic competing cache");
+    }
     if env::var_os("SYNTHETIC_CURL_FAILURE").is_some() {
         io::stdout()
             .write_all(b"HTTP 503 synthetic error response")
