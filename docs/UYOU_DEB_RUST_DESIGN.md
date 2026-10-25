@@ -2,27 +2,29 @@
 
 **Status:** Design proposal; implementation is gated on the user approving this design.
 
-**Scope:** Cucklord420/uYouPlus PR #16, branch `fix/debian-ar-extraction-on-pr13-20261022`. Reviewed PR head: `0bd2ecee9c40e0d720cd400ec56a340793667e9f`.
+**Scope:** Cucklord420/uYouPlus PR #16, branch `fix/debian-ar-extraction-on-pr13-20261022`. Reviewed implementation head: `0bd2ecee9c40e0d720cd400ec56a340793667e9f`; this design document is on the same branch.
 
 ## Problem and policy
 
-PR #16 closes a real supply-chain and archive-format gap: a versioned HTTPS URL does not authenticate the downloaded Debian package, and a Debian `.deb` is an outer `ar` archive rather than a TAR file. The current PR adds Python validators, an extraction script, and Python tests. The repository's current `AGENTS.md` and Toe-Tickling Guidebook v1.2.4 require new executable code and tests to be Rust.
+PR #16 addresses a real supply-chain and archive-format gap: a versioned HTTPS URL does not authenticate the downloaded Debian package, and a Debian `.deb` is an outer `ar` archive rather than a TAR file. The current PR adds Python validators, an extraction script, and Python tests. The repository's current `AGENTS.md` and Toe-Tickling Guidebook v1.2.4 require new executable code and tests to be Rust.
 
-The port must preserve the existing fail-closed digest gate, bounded download, correct Debian extraction, staged payload validation, replacement rollback, and PR #15's transferred safeguards. It must not invent or supply a vendor digest.
+The port must preserve the fail-closed digest gate, bounded download, correct Debian extraction, staged payload validation, replacement rollback, and PR #15's transferred safeguards. It must not invent or supply a vendor digest.
 
 ## Proposed approach
 
 Add a `uyou-deb` Rust binary to the existing `rust/build-inputs` Cargo package. Keep the package's current Rust 2021 edition and use its existing `sha2` dependency. Avoid adding a new runtime dependency unless implementation proves one is needed.
 
-Keep the mature Debian extraction implementation in the already-installed `dpkg-deb` utility. Rust will invoke it directly with argument arrays (no shell parsing), and will own validation, download orchestration, staging, and promotion. This avoids reimplementing Debian archive semantics while moving the new decision-making and executable logic into Rust.
+Keep Debian extraction in the existing `dpkg-deb` utility. Rust will invoke it directly with argument arrays (no shell parsing) and own validation, download orchestration, staging, and promotion. This avoids reimplementing Debian archive semantics while moving the new decision-making and executable logic into Rust.
 
 The binary will expose three operations:
 
-- `validate`: validate the required 64-hex SHA-256 input and the 1–40 character version format before any download, cache use, or extraction.
-- `ensure`: validate the expected digest and version; recheck any cached package; otherwise download from the fixed HTTPS release URL to a unique temporary file beside the cache; enforce HTTPS-only redirects, bounded redirects/time/size, HTTP failure handling, and retries; validate the Debian `ar` magic, regular-file type, size cap, and SHA-256; then promote without overwriting a concurrently-created cache file. If a competing cache file appears, accept it only after independently verifying it against the same expected digest.
-- `extract`: reverify the package, invoke `dpkg-deb --extract` into a new empty staging directory, validate the required dylib and bundle inside that staged tree, and only then replace the prior `Library` tree. Keep the current backup-and-restore behavior if promotion fails; never let stale files satisfy staged-payload checks.
+- `validate`: validate the required 64-hex SHA-256 input and 1–40 character version format before any download, cache use, or extraction.
+- `ensure`: accept a fixed build directory plus the version and expected digest. Validate the version before constructing any path or URL; construct the cache filename and fixed HTTPS release URL in Rust. Recheck any cached package; otherwise download to a unique temporary file beside the cache; enforce HTTPS-only redirects, bounded redirects/time/size, HTTP failure handling, and retries; validate Debian `ar` magic, regular-file type, size cap, and SHA-256; then promote without overwriting a concurrently-created cache file. If a competing cache file appears, accept it only after independently verifying it against the same expected digest.
+- `extract`: accept the fixed build directory, version, and digest; derive the cache path only after validating the version, reverify the package, invoke `dpkg-deb --extract` into a new empty staging directory, validate the required dylib and bundle inside that staged tree, and only then replace the prior `Library` tree. Keep the current backup-and-restore behavior if promotion fails; never let stale files satisfy staged-payload checks.
 
-The Makefile will delegate these operations to `cargo run --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb`. The workflow will invoke the same Rust validator and test suite. Existing Python tests for the pre-existing IPA-input behavior remain in place; the new Python uYou scripts and three uYou-specific Python test modules will be removed only after their behavior is covered by Rust tests. Update `docs/UYOU_PACKAGE_INTEGRITY.md` to describe the Rust entry points and retain the independent-digest warning.
+The Makefile will pass the fixed `Tweaks/uYou` directory and the exported `UYOU_VERSION` / `UYOU_DEB_SHA256` values to `cargo run --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb`. Recipes will quote the shell environment expansions (for example, `--version "$$UYOU_VERSION"`) and will not interpolate `$(UYOU_VERSION)` into a file path, URL, or shell fragment. Rust validates the version before deriving any cache filename or network URL. Add a regression using shell metacharacters and command-substitution-looking version input; it must be rejected without invoking the downloader or creating a marker file.
+
+The workflow will invoke the same Rust validator and test suite. Existing Python tests for the pre-existing IPA-input behavior remain in place; the new Python uYou scripts and three uYou-specific Python test modules will be removed only after their behavior is covered by Rust tests. Update `docs/UYOU_PACKAGE_INTEGRITY.md` to describe the Rust entry points and retain the independent-digest warning.
 
 The existing crate has edition 2021, no `rust-toolchain.toml`, and no `Cargo.lock` on the reviewed branch. Implementation will confirm the repository's lockfile/reproducibility policy before changing dependency state. It will not add dependencies merely to make this port easier.
 
@@ -31,10 +33,12 @@ The existing crate has edition 2021, no `rust-toolchain.toml`, and no `Cargo.loc
 Rust unit and integration tests will cover:
 
 - Valid and invalid digests, malformed versions, missing files, directories and symlinks, Debian `ar` magic, empty and oversized inputs, digest mismatch, and symlinked package parents.
+- Shell metacharacters and command-substitution-looking version values are treated only as data, rejected before path construction or downloader invocation, and cannot create a marker file.
 - Rejection of HTTP error bodies and failed downloads; no partial cache publication or leftover temporary file.
 - A digest-matching synthetic download is verified before cache promotion and extraction.
 - Synthetic `.deb` construction with `dpkg-deb` (when available), including required files, missing-payload rejection when old files exist, successful replacement of stale extras, and failure preservation of the previous payload.
-- Rust tests that inspect the workflow and Makefile to ensure both delegate to the Rust binary and that validation precedes package consumption.
+- An injected failure at the new-`Library` promotion step restores the prior backed-up `Library` tree.
+- Rust tests inspect the workflow and Makefile to ensure both delegate to the Rust binary, the version is passed as data rather than expanded into a shell path, and validation precedes package consumption.
 - A no-clobber cache-promotion regression for a destination that appears during download.
 
 Network behavior will be tested offline through Rust-injected command execution, not through a shell or Python fake executable. Synthetic fixtures will contain fictional bytes only. The Debian integration test may skip on a runner without `dpkg-deb`; the dedicated Ubuntu extraction workflow and macOS build runner must exercise the relevant path.
