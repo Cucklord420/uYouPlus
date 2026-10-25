@@ -18,13 +18,13 @@ Keep Debian extraction in the existing `dpkg-deb` utility. Rust will invoke it d
 
 The binary will expose three operations:
 
-- `validate`: validate the required 64-hex SHA-256 input and 1–40 character version format before any download, cache use, or extraction.
+- `validate`: read the build's version and expected digest as environment data; validate the required 64-hex SHA-256 and 1–40 character version before any download, cache use, extraction, or Make invocation.
 - `ensure`: accept a fixed build directory plus the version and expected digest. Validate the version before constructing any path or URL; construct the cache filename and fixed HTTPS release URL in Rust. Recheck any cached package; otherwise download to a unique temporary file beside the cache; enforce HTTPS-only redirects, bounded redirects/time/size, HTTP failure handling, and retries; validate Debian `ar` magic, regular-file type, size cap, and SHA-256; then promote without overwriting a concurrently-created cache file. If a competing cache file appears, accept it only after independently verifying it against the same expected digest.
 - `extract`: accept the fixed build directory, version, and digest; derive the cache path only after validating the version, reverify the package, invoke `dpkg-deb --extract` into a new empty staging directory, validate the required dylib and bundle inside that staged tree, and only then replace the prior `Library` tree. Keep the current backup-and-restore behavior if promotion fails; never let stale files satisfy staged-payload checks.
 
-The Makefile will pass the fixed `Tweaks/uYou` directory and the exported `UYOU_VERSION` / `UYOU_DEB_SHA256` values to `cargo run --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb`. Recipes will quote the shell environment expansions (for example, `--version "$$UYOU_VERSION"`) and will not interpolate `$(UYOU_VERSION)` into a file path, URL, or shell fragment. Rust validates the version before deriving any cache filename or network URL. Add a regression using shell metacharacters and command-substitution-looking version input; it must be rejected without invoking the downloader or creating a marker file.
+The Makefile will begin with a guard that refuses to proceed unless `UYOU_DEB_INPUTS_VALIDATED=1` is present. The workflow and documented local build command will run the Rust `validate` command first, then set this marker only for the subsequent Make invocation. The guard must appear before any reference to `UYOU_VERSION` or any included Theos makefile. This prevents GNU Make from expanding attacker-controlled Make functions before Rust rejects the input. Recipes will quote shell environment expansions (for example, `--version "$$UYOU_VERSION"`) and will not interpolate `$(UYOU_VERSION)` into a file path, URL, or shell fragment. Rust validates again inside `ensure` and `extract`, and constructs the cache filename and URL only from validated data.
 
-The workflow will invoke the same Rust validator and test suite. Existing Python tests for the pre-existing IPA-input behavior remain in place; the new Python uYou scripts and three uYou-specific Python test modules will be removed only after their behavior is covered by Rust tests. Update `docs/UYOU_PACKAGE_INTEGRITY.md` to describe the Rust entry points and retain the independent-digest warning.
+Update `docs/UYOU_PACKAGE_INTEGRITY.md` to document the Rust entry points and safe local invocation sequence while retaining the independent-digest warning. Existing Python tests for the pre-existing IPA-input behavior remain in place; the new Python uYou scripts and three uYou-specific Python test modules will be removed only after their behavior is covered by Rust tests.
 
 The existing crate has edition 2021, no `rust-toolchain.toml`, and no `Cargo.lock` on the reviewed branch. Implementation will confirm the repository's lockfile/reproducibility policy before changing dependency state. It will not add dependencies merely to make this port easier.
 
@@ -33,12 +33,13 @@ The existing crate has edition 2021, no `rust-toolchain.toml`, and no `Cargo.loc
 Rust unit and integration tests will cover:
 
 - Valid and invalid digests, malformed versions, missing files, directories and symlinks, Debian `ar` magic, empty and oversized inputs, digest mismatch, and symlinked package parents.
-- Shell metacharacters and command-substitution-looking version values are treated only as data, rejected before path construction or downloader invocation, and cannot create a marker file.
+- A Make-level input such as `UYOU_VERSION='$(shell touch marker)'` is rejected by the top-of-file guard before Make evaluates it; the marker remains absent. The actual workflow test also proves Rust validation succeeds before Make is invoked with the validated marker.
+- Shell metacharacters and command-substitution-looking version values are treated only as data by Rust and rejected before path construction or downloader invocation.
 - Rejection of HTTP error bodies and failed downloads; no partial cache publication or leftover temporary file.
 - A digest-matching synthetic download is verified before cache promotion and extraction.
 - Synthetic `.deb` construction with `dpkg-deb` (when available), including required files, missing-payload rejection when old files exist, successful replacement of stale extras, and failure preservation of the previous payload.
 - An injected failure at the new-`Library` promotion step restores the prior backed-up `Library` tree.
-- Rust tests inspect the workflow and Makefile to ensure both delegate to the Rust binary, the version is passed as data rather than expanded into a shell path, and validation precedes package consumption.
+- Rust tests inspect the workflow and Makefile to ensure the guard is first, both delegate to the Rust binary, validation precedes Make and package consumption, and no unvalidated version is expanded into a shell path.
 - A no-clobber cache-promotion regression for a destination that appears during download.
 
 Network behavior will be tested offline through Rust-injected command execution, not through a shell or Python fake executable. Synthetic fixtures will contain fictional bytes only. The Debian integration test may skip on a runner without `dpkg-deb`; the dedicated Ubuntu extraction workflow and macOS build runner must exercise the relevant path.
