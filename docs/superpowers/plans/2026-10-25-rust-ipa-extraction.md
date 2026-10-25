@@ -36,10 +36,10 @@
 - Add `prepare(path: &Path, expected: &str, staging_root: &Path, payload_destination: &Path) -> Result<String, String>`.
 - CLI accepts paired `--staging-dir` and `--payload-destination` arguments; when present, it prepares the bundle and prints the validated version.
 
-- [ ] Write the integration test for a valid synthetic IPA with an app file, executable mode, and allowed root metadata; assert version, staged app, copied app, and no root metadata under checkout.
-- [ ] Run the new integration test against the current CLI and confirm it fails specifically because preparation arguments are not supported.
-- [ ] Add negative integration cases for an unexpected member and pre-existing destination; assert the checkout marker and destination contents remain unchanged.
-- [ ] Implement full validation before creating staging or destination paths; reject existing paths without following symlinks; extract only the app subtree; preserve safe permission bits; copy only the staged app bundle.
+- [x] Write the integration test for a valid synthetic IPA with an app file, executable mode, and allowed root metadata; assert version, staged app, copied app, and no root metadata under checkout.
+- [x] Run the new integration test against the current CLI and confirm it fails specifically because preparation arguments are not supported.
+- [x] Add negative integration cases for an unexpected member and pre-existing destination; assert the checkout marker and destination contents remain unchanged.
+- [x] Implement full validation before creating staging or destination paths; reject existing paths without following symlinks; extract only the app subtree; preserve safe permission bits; copy only the staged app bundle.
 - [ ] Run focused Rust tests, then the complete Cargo suite.
 
 ### Task 2: Rust-only regression and workflow coverage
@@ -55,10 +55,10 @@
 - Reuse the Rust input validator and IPA command from Task 1.
 - Workflow keeps HTTPS-only `curl`, runner-temp staging and trap cleanup; Rust performs ZIP validation, extraction and app promotion.
 
-- [ ] Port Python input URL edge cases to literal expected results in Rust tests; retain the existing input and IPA rejection cases.
-- [ ] Add Rust workflow-policy coverage for manual opt-in, validate-before-build, least-privilege publish separation, pinned actions, secure redirects, and the Rust prepare command.
-- [ ] Update the workflow to call Rust preparation and remove Python test execution, `unzip`, `cp -R`, and redundant shell path checks.
-- [ ] Remove the superseded Python validator/tests only after equivalent Rust coverage exists; remove Python differential invocations from Rust tests.
+- [x] Port Python input URL edge cases to literal expected results in Rust tests; retain the existing input and IPA rejection cases.
+- [x] Add Rust workflow-policy coverage for manual opt-in, validate-before-build, least-privilege publish separation, pinned actions, secure redirects, and the Rust prepare command.
+- [x] Update the workflow to call Rust preparation and remove Python test execution, `unzip`, `cp -R`, and redundant shell path checks.
+- [x] Remove the superseded Python validator/tests only after equivalent Rust coverage exists; remove Python differential invocations from Rust tests.
 - [ ] Run Rust tests, formatting, strict Clippy, and workflow shell/action validation.
 
 ### Task 3: Review and exact-head verification

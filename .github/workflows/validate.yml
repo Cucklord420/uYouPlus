@@ -19,10 +19,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run 37 offline input and workflow security regressions
-        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
-
-      - name: Rust input validation and original Python differential tests
+      - name: Run Rust input, IPA, and workflow security regressions
         run: cargo test --manifest-path rust/build-inputs/Cargo.toml
       - name: Check Rust formatting
         run: cargo fmt --manifest-path rust/build-inputs/Cargo.toml -- --check

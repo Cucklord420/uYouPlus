@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Read-only Rust input validation for the existing manual IPA build.
-// Ported from the inputs command in scripts/build_checks.py.
+// Rust input validation for the existing manual IPA build.
 
 use regex::Regex;
 use std::net::IpAddr;
@@ -146,7 +145,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     #[test]
     fn all_existing_15_input_cases() {
@@ -218,99 +216,31 @@ mod tests {
     }
 
     #[test]
-    fn differential_behavior_against_actual_python_entrypoint() {
-        let py = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../scripts/build_checks.py");
+    fn url_normalization_edges_match_expected_policy() {
         let sha = "f".repeat(64);
         let cases = [
-            "https://downloads.example.org/my.ipa",
-            "https://127.0.0.1/a.ipa",
-            "https://localhost/a.ipa",
-            "https://host.internal/a.ipa",
-            "https://host.test/a.ipa",
-            "https://downloads.example.org:8443/a.ipa",
-            "https://downloads.example.org/a.ipa#fragment",
-            "https://downloads.example.org/",
-            "https://downloads.example.org/a.ipa?token=abc",
-            "https://downloads.example.org/a.ipa#",
-            "https://downloads.example.org/a/.",
-            "https://downloads.example.org/a/..",
-            "https://downloads.example.org/.",
-            "https://downloads.example.org/a/../",
-            "https://ex%61mple.org/test.ipa",
-            "https://bücher.example.org/test.ipa",
-            "https://exa\\mple.org/test.ipa",
-            "https:downloads.example.org/test.ipa",
-            "https://downloads.example.org/%66ile.ipa?token=abc",
-        ];
-        for url in cases {
-            let rust_ok = validate(url, &sha, "3.0.3", "com.google.ios.youtube", "YouTube").is_ok();
-            let original = Command::new("python3")
-                .arg(&py)
-                .args([
-                    "inputs",
-                    "--url",
-                    url,
-                    "--sha256",
-                    &sha,
-                    "--version",
-                    "3.0.3",
-                    "--bundle",
-                    "com.google.ios.youtube",
-                    "--app",
-                    "YouTube",
-                ])
-                .output()
-                .expect("Python comparator");
-            assert_eq!(
-                rust_ok,
-                original.status.success(),
-                "Different behavior for {url}"
-            );
-        }
-    }
-
-    #[test]
-    fn url_normalization_edges_match_original_python_entrypoint() {
-        let py = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../scripts/build_checks.py");
-        let sha = "f".repeat(64);
-        let cases = [
-            ("https://ex%61mple.org/test.ipa", false),
-            ("https://bücher.example.org/test.ipa", false),
-            ("https://exa\\mple.org/test.ipa", false),
-            ("https:downloads.example.org/test.ipa", false),
+            ("https://downloads.example.org/my.ipa", true),
+            ("https://127.0.0.1/a.ipa", false),
+            ("https://localhost/a.ipa", false),
+            ("https://host.internal/a.ipa", false),
+            ("https://host.test/a.ipa", false),
+            ("https://downloads.example.org:8443/a.ipa", false),
+            ("https://downloads.example.org/a.ipa#fragment", false),
+            ("https://downloads.example.org/", false),
+            ("https://downloads.example.org/a.ipa?token=abc", true),
+            ("https://downloads.example.org/a.ipa#", true),
             ("https://downloads.example.org/a/.", true),
             ("https://downloads.example.org/a/..", true),
             ("https://downloads.example.org/.", true),
             ("https://downloads.example.org/a/../", false),
-            ("https://downloads.example.org/a.ipa#", true),
+            ("https://ex%61mple.org/test.ipa", false),
+            ("https://bücher.example.org/test.ipa", false),
+            ("https://exa\\mple.org/test.ipa", false),
+            ("https:downloads.example.org/test.ipa", false),
             ("https://downloads.example.org/%66ile.ipa?token=abc", true),
         ];
         for (url, expected) in cases {
             let rust_ok = validate(url, &sha, "3.0.3", "com.google.ios.youtube", "YouTube").is_ok();
-            let original = Command::new("python3")
-                .arg(&py)
-                .args([
-                    "inputs",
-                    "--url",
-                    url,
-                    "--sha256",
-                    &sha,
-                    "--version",
-                    "3.0.3",
-                    "--bundle",
-                    "com.google.ios.youtube",
-                    "--app",
-                    "YouTube",
-                ])
-                .output()
-                .expect("Python comparator");
-            assert_eq!(
-                rust_ok,
-                original.status.success(),
-                "Different behavior for {url}"
-            );
             assert_eq!(rust_ok, expected, "Unexpected validation result for {url}");
         }
     }

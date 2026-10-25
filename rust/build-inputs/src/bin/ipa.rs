@@ -1,15 +1,15 @@
-// Read-only IPA checksum and ZIP/plist security verifier.
-// Preserves the input IPA; no extraction, signing, network or disk writes.
+// IPA checksum and ZIP/plist verifier with isolated app-bundle preparation.
+// The supplied IPA is preserved; archive contents are promoted only after verification.
 
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{Read, Seek};
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek};
+use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
-fn verify(path: &Path, expected: &str) -> Result<String, String> {
+fn verified_archive(path: &Path, expected: &str) -> Result<(ZipArchive<File>, String), String> {
     let sha = Regex::new(r"(?i)^[0-9a-f]{64}$").unwrap();
     if !sha.is_match(expected) {
         return Err("Invalid SHA-256 digest".into());
@@ -49,6 +49,9 @@ fn verify(path: &Path, expected: &str) -> Result<String, String> {
             || parts.contains(&"..")
             || parts.first().is_some_and(|s| s.contains(':'))
         {
+            return Err("Unsafe IPA archive entry path".into());
+        }
+        if member.enclosed_name().is_none() {
             return Err("Unsafe IPA archive entry path".into());
         }
         if member
@@ -117,7 +120,177 @@ fn verify(path: &Path, expected: &str) -> Result<String, String> {
     if !pattern.is_match(version) {
         return Err("Invalid YouTube CFBundleVersion".into());
     }
-    Ok(version.to_owned())
+    Ok((archive, version.to_owned()))
+}
+
+fn verify(path: &Path, expected: &str) -> Result<String, String> {
+    verified_archive(path, expected).map(|(_, version)| version)
+}
+
+fn ensure_absent_output(path: &Path) -> Result<PathBuf, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => return Err(format!("destination already exists: {}", path.display())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+
+    let name = path
+        .file_name()
+        .ok_or("Output path must name a new directory")?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let parent = fs::canonicalize(parent).map_err(|error| error.to_string())?;
+    Ok(parent.join(name))
+}
+
+fn checked_new_directory(path: &Path) -> Result<(), String> {
+    fs::create_dir(path).map_err(|error| error.to_string())
+}
+
+#[cfg(unix)]
+fn set_archive_mode(path: &Path, mode: u32, directory: bool) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    // Drop setuid/setgid/sticky bits and retain owner access for copying and cleanup.
+    let owner_access = if directory { 0o700 } else { 0o600 };
+    fs::set_permissions(
+        path,
+        fs::Permissions::from_mode((mode & 0o777) | owner_access),
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(not(unix))]
+fn set_archive_mode(_path: &Path, _mode: u32, _directory: bool) -> Result<(), String> {
+    Ok(())
+}
+
+fn extract_app_bundle<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    staging_dir: &Path,
+) -> Result<(), String> {
+    let mut directory_modes = Vec::new();
+
+    for index in 0..archive.len() {
+        let mut member = archive.by_index(index).map_err(|error| error.to_string())?;
+        let name = member.name().to_owned();
+        if matches!(name.as_str(), "iTunesMetadata.plist" | "iTunesArtwork") {
+            continue;
+        }
+        if name == "Payload/" {
+            let target = staging_dir.join("Payload");
+            fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+            if let Some(mode) = member.unix_mode() {
+                directory_modes.push((target, mode));
+            }
+            continue;
+        }
+        if !(name == "Payload/YouTube.app/" || name.starts_with("Payload/YouTube.app/")) {
+            return Err("IPA contains an unapproved archive member".into());
+        }
+
+        let enclosed = member
+            .enclosed_name()
+            .ok_or("Unsafe IPA archive entry path")?;
+        let target = staging_dir.join(enclosed);
+        if member.is_dir() {
+            fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+            if let Some(mode) = member.unix_mode() {
+                directory_modes.push((target, mode));
+            }
+        } else {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+                .map_err(|error| error.to_string())?;
+            io::copy(&mut member, &mut output).map_err(|error| error.to_string())?;
+            output.flush().map_err(|error| error.to_string())?;
+            if let Some(mode) = member.unix_mode() {
+                set_archive_mode(&target, mode, false)?;
+            }
+        }
+    }
+
+    directory_modes.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+    for (path, mode) in directory_modes {
+        set_archive_mode(&path, mode, true)?;
+    }
+    Ok(())
+}
+
+fn copy_app_file(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(source).map_err(|error| error.to_string())?;
+    if !metadata.file_type().is_file() {
+        return Err("Staged IPA contains a non-regular app member".into());
+    }
+    let mut input = File::open(source).map_err(|error| error.to_string())?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| error.to_string())?;
+    io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
+    output.flush().map_err(|error| error.to_string())?;
+    fs::set_permissions(destination, metadata.permissions()).map_err(|error| error.to_string())
+}
+
+fn copy_app_directory(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(source).map_err(|error| error.to_string())?;
+    if !metadata.file_type().is_dir() {
+        return Err("Staged IPA app bundle is not a directory".into());
+    }
+    checked_new_directory(destination)?;
+    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let source_child = entry.path();
+        let destination_child = destination.join(entry.file_name());
+        let child_type = entry.file_type().map_err(|error| error.to_string())?;
+        if child_type.is_dir() {
+            copy_app_directory(&source_child, &destination_child)?;
+        } else if child_type.is_file() {
+            copy_app_file(&source_child, &destination_child)?;
+        } else {
+            return Err("Staged IPA contains a non-regular app member".into());
+        }
+    }
+    fs::set_permissions(destination, metadata.permissions()).map_err(|error| error.to_string())
+}
+
+fn prepare(
+    path: &Path,
+    expected: &str,
+    staging_dir: &Path,
+    payload_destination: &Path,
+) -> Result<String, String> {
+    let staging = ensure_absent_output(staging_dir)?;
+    let payload = ensure_absent_output(payload_destination)?;
+    if staging.starts_with(&payload) || payload.starts_with(&staging) {
+        return Err("Staging and payload destinations must not overlap".into());
+    }
+
+    let (mut archive, version) = verified_archive(path, expected)?;
+    checked_new_directory(&staging)?;
+    if let Err(error) = extract_app_bundle(&mut archive, &staging) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+
+    let staged_app = staging.join("Payload/YouTube.app");
+    if let Err(error) = checked_new_directory(&payload) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    if let Err(error) = copy_app_directory(&staged_app, &payload.join("YouTube.app")) {
+        let _ = fs::remove_dir_all(&payload);
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    Ok(version)
 }
 
 fn main() {
@@ -128,6 +301,8 @@ fn main() {
     }
     let mut path = None;
     let mut sha = None;
+    let mut staging_dir = None;
+    let mut payload_destination = None;
     while let Some(flag) = args.next() {
         let Some(value) = args.next() else {
             eprintln!("Missing option value");
@@ -136,6 +311,8 @@ fn main() {
         match flag.as_str() {
             "--file" => path = Some(value),
             "--sha256" => sha = Some(value),
+            "--staging-dir" => staging_dir = Some(value),
+            "--payload-destination" => payload_destination = Some(value),
             _ => {
                 eprintln!("Invalid option");
                 std::process::exit(2);
@@ -146,7 +323,20 @@ fn main() {
         eprintln!("Missing required file or digest");
         std::process::exit(2);
     };
-    match verify(Path::new(&path), &sha) {
+    let result = match (staging_dir, payload_destination) {
+        (Some(staging), Some(payload)) => prepare(
+            Path::new(&path),
+            &sha,
+            Path::new(&staging),
+            Path::new(&payload),
+        ),
+        (None, None) => verify(Path::new(&path), &sha),
+        _ => {
+            eprintln!("Staging and payload destination must be supplied together");
+            std::process::exit(2);
+        }
+    };
+    match result {
         Ok(version) => println!("{version}"),
         Err(error) => {
             eprintln!("Build input rejected: {error}");
@@ -159,7 +349,6 @@ fn main() {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::process::Command;
     use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
     const PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -167,6 +356,13 @@ mod tests {
 <plist version="1.0"><dict><key>CFBundleVersion</key><string>19.25.4</string></dict></plist>"#;
 
     fn fixture(extra: &[(&str, &[u8])]) -> (tempfile::TempDir, String) {
+        fixture_with_manifest(PLIST, extra)
+    }
+
+    fn fixture_with_manifest(
+        manifest: &str,
+        extra: &[(&str, &[u8])],
+    ) -> (tempfile::TempDir, String) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("fixture.ipa");
         let file = File::create(&path).unwrap();
@@ -175,7 +371,7 @@ mod tests {
         writer
             .start_file("Payload/YouTube.app/Info.plist", options)
             .unwrap();
-        writer.write_all(PLIST.as_bytes()).unwrap();
+        writer.write_all(manifest.as_bytes()).unwrap();
         // zip 8 refuses duplicate names during writing. Build a distinct, same-length
         // fixture name and then restore the duplicate in both ZIP filename records.
         // This keeps the malformed-archive regression independent of ZipWriter policy.
@@ -209,8 +405,8 @@ mod tests {
         (directory, format!("{:x}", Sha256::digest(&contents)))
     }
 
-    // ZipWriter's unix_permissions only stores rwx bits, so construct a
-    // synthetic Unix FIFO by setting the central-directory host and mode bits.
+    // ZipWriter's unix_permissions only stores rwx bits, so patch the central
+    // directory host and mode bits for symlink, FIFO, and privileged-mode cases.
     fn fixture_with_unix_mode(name: &str, data: &[u8], mode: u32) -> (tempfile::TempDir, String) {
         let (directory, _) = fixture(&[(name, data)]);
         let path = directory.path().join("fixture.ipa");
@@ -261,11 +457,54 @@ mod tests {
     }
 
     #[test]
+    fn rejects_symbolic_link_archive_members() {
+        let (temp, sha) = fixture_with_unix_mode(
+            "Payload/YouTube.app/link",
+            b"synthetic link target",
+            0o120777,
+        );
+        let error = verify(&temp.path().join("fixture.ipa"), &sha).unwrap_err();
+        assert!(error.contains("symbolic link"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_drops_privileged_mode_bits_and_keeps_executable_bits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temp, sha) = fixture_with_unix_mode(
+            "Payload/YouTube.app/helper",
+            b"synthetic executable",
+            0o104755,
+        );
+        let ipa = temp.path().join("fixture.ipa");
+        let staging = temp.path().join("staging");
+        let payload = temp.path().join("checkout/main/Payload");
+        std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
+
+        prepare(&ipa, &sha, &staging, &payload).unwrap();
+        let mode = std::fs::metadata(payload.join("YouTube.app/helper"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755, "executable bits should be retained");
+        assert_eq!(mode & 0o7000, 0, "privileged mode bits must be removed");
+    }
+
+    #[test]
     fn validates_synthetic_ipa_and_checksum() {
         let (temp, sha) = fixture(&[]);
         let path = temp.path().join("fixture.ipa");
         assert_eq!(verify(&path, &sha).unwrap(), "19.25.4");
         assert!(verify(&path, &"f".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_app_version() {
+        let manifest = PLIST.replace("19.25.4", "$(bad)");
+        let (temp, sha) = fixture_with_manifest(&manifest, &[]);
+        let error = verify(&temp.path().join("fixture.ipa"), &sha).unwrap_err();
+        assert!(error.contains("Invalid YouTube CFBundleVersion"), "{error}");
     }
 
     #[test]
@@ -310,40 +549,6 @@ mod tests {
             assert!(
                 verify(&temp.path().join("fixture.ipa"), &sha).is_ok(),
                 "approved IPA entry rejected: {name}"
-            );
-        }
-    }
-
-    #[test]
-    fn original_python_reports_equivalent_acceptance_on_synthetic_ipa() {
-        let python = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../scripts/build_checks.py");
-        for extras in [
-            Vec::<(&str, &[u8])>::new(),
-            vec![("../escape", b"x".as_slice())],
-            vec![("Payload/../escape", b"x".as_slice())],
-            vec![("Payload\\escape", b"x".as_slice())],
-            vec![("Payload/YouTube.app/Info.plist", b"x".as_slice())],
-            vec![("unexpected-file.txt", b"x".as_slice())],
-            vec![("Payload/Other.app/file", b"x".as_slice())],
-            vec![("iTunesArtwork", b"x".as_slice())],
-        ] {
-            let (temp, sha) = fixture(&extras);
-            let path = temp.path().join("fixture.ipa");
-            let rust = verify(&path, &sha).is_ok();
-            let result = Command::new("python3")
-                .arg(&python)
-                .arg("ipa")
-                .arg("--file")
-                .arg(&path)
-                .arg("--sha256")
-                .arg(&sha)
-                .output()
-                .unwrap();
-            assert_eq!(
-                rust,
-                result.status.success(),
-                "Mismatch with original: {extras:?}"
             );
         }
     }

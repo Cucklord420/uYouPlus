@@ -155,6 +155,32 @@ fn refuses_a_preexisting_payload_without_overwriting_it() {
     assert!(!staging.exists());
 }
 
+#[test]
+fn refuses_a_preexisting_staging_directory_without_overwriting_it() {
+    let (temp, checkout, staging, payload) = checkout_fixture();
+    fs::create_dir(&staging).unwrap();
+    fs::write(staging.join("marker"), b"preexisting staging data").unwrap();
+    let ipa = temp.path().join("valid.ipa");
+    let digest = make_ipa(&ipa, &valid_entries());
+
+    let output = run_prepare(&ipa, &digest, &staging, &payload);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("destination already exists"),
+        "unexpected rejection: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(staging.join("marker")).unwrap(),
+        b"preexisting staging data"
+    );
+    assert_eq!(
+        fs::read(checkout.join("main/Makefile")).unwrap(),
+        b"trusted build source"
+    );
+    assert!(!payload.exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn refuses_symlink_payload_without_writing_through_it() {
