@@ -68,12 +68,11 @@ fn validation_workflows_do_not_run_python() {
 #[test]
 fn action_references_are_pinned_to_commits() {
     let reference = Regex::new(r"uses:\s+([\w-]+/[\w-]+)@(\S+)").unwrap();
+    let commit = Regex::new(r"^[0-9a-f]{40}$").unwrap();
     for line in BUILD_WORKFLOW.lines() {
         if let Some(captures) = reference.captures(line) {
             assert!(
-                Regex::new(r"^[0-9a-f]{40}$")
-                    .unwrap()
-                    .is_match(&captures[2]),
+                commit.is_match(&captures[2]),
                 "unpinned action reference: {line}"
             );
         }
@@ -82,14 +81,16 @@ fn action_references_are_pinned_to_commits() {
 
 #[test]
 fn third_party_tool_sources_are_pinned_to_commits() {
+    let source = Regex::new(r"repository: ([\w-]+/[\w-]+)\n\s+ref: [0-9a-f]{40}").unwrap();
     for (repository, workflow) in [
         ("theos/theos", BUILD_WORKFLOW),
         ("qnblackcat/theos-jailed", BUILD_WORKFLOW),
         ("theos/sdks", BUILD_WORKFLOW),
     ] {
-        let pattern = format!(r"repository: {repository}\n\s+ref: [0-9a-f]{{40}}");
         assert!(
-            Regex::new(&pattern).unwrap().is_match(workflow),
+            source.captures_iter(workflow).any(|captures| captures
+                .get(1)
+                .is_some_and(|name| name.as_str() == repository)),
             "{repository}"
         );
     }
