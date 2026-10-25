@@ -56,10 +56,7 @@ fn validate(
     // Python urlsplit() validates the original path. Url::parse normalizes
     // terminal /./ and /../ segments, which can change the file-path check.
     let path_and_suffix = &after_scheme[raw_authority.len()..];
-    let raw_path = path_and_suffix
-        .split(&['?', '#'][..])
-        .next()
-        .unwrap_or("");
+    let raw_path = path_and_suffix.split(&['?', '#'][..]).next().unwrap_or("");
     if raw_path.is_empty() || raw_path.ends_with('/') {
         return Err("IPA URL must point to a file");
     }
@@ -68,7 +65,9 @@ fn validate(
         || parsed.host().is_none()
         || !parsed.username().is_empty()
         || parsed.password().is_some()
-        || parsed.fragment().is_some_and(|fragment| !fragment.is_empty())
+        || parsed
+            .fragment()
+            .is_some_and(|fragment| !fragment.is_empty())
     {
         return Err("IPA URL must use HTTPS without credentials or fragments");
     }
@@ -293,12 +292,25 @@ mod tests {
             let original = Command::new("python3")
                 .arg(&py)
                 .args([
-                    "inputs", "--url", url, "--sha256", &sha, "--version", "3.0.3",
-                    "--bundle", "com.google.ios.youtube", "--app", "YouTube",
+                    "inputs",
+                    "--url",
+                    url,
+                    "--sha256",
+                    &sha,
+                    "--version",
+                    "3.0.3",
+                    "--bundle",
+                    "com.google.ios.youtube",
+                    "--app",
+                    "YouTube",
                 ])
                 .output()
                 .expect("Python comparator");
-            assert_eq!(rust_ok, original.status.success(), "Different behavior for {url}");
+            assert_eq!(
+                rust_ok,
+                original.status.success(),
+                "Different behavior for {url}"
+            );
             assert_eq!(rust_ok, expected, "Unexpected validation result for {url}");
         }
     }
