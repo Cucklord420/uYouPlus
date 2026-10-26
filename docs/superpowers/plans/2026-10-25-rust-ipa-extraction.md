@@ -4,9 +4,9 @@
 
 **Goal:** Run IPA validation and safe extraction through the existing Rust build-inputs project while keeping archive contents outside the source checkout until validation succeeds.
 
-**Architecture:** Extend the Rust `ipa` command to validate the digest and entire ZIP, extract only the allowed app bundle into a fresh staging directory, then copy it to an absent Theos `Payload` destination. The workflow keeps its HTTPS-only download and cleanup orchestration but removes `unzip` and archive-driven shell copying. Rust tests own the archive and workflow regressions.
+**Architecture:** Extend the Rust `ipa` command to stream a bounded HTTPS download, validate the digest and entire ZIP, preflight disk space, extract only the allowed app bundle into a fresh staging directory, then copy it to an absent Theos `Payload` destination. The workflow owns only the temporary-directory lifecycle and invokes Rust for download and preparation. Rust tests own the transfer, archive, space-policy, and workflow regressions.
 
-**Tech Stack:** Rust 2021, existing `zip 8.6.0`, `plist`, `sha2`, `url`; GitHub Actions.
+**Tech Stack:** Rust 2021, existing `zip 8.6.0`, `plist`, `sha2`, `url`, and `libc` for Unix disk-space queries; GitHub Actions.
 
 **Spec:** `docs/superpowers/specs/2026-10-25-rust-ipa-extraction-design.md`
 
@@ -14,6 +14,11 @@
 - New executable code and tests are Rust.
 - Preserve the current URL, SHA-256, archive validation, metadata allowlist, version, and Theos behavior.
 - Extract to a fresh directory under runner temp; copy only `Payload/YouTube.app` into an absent `main/Payload`.
+- Enforce a 4 GiB transfer ceiling and retain 4 GiB of available space; the per-attempt ceiling is lowered to available space above that reserve.
+- Ignore `Content-Length`, never write an over-limit byte, and remove partial transfers before retrying or failing.
+- Before extraction, require space for the staged app and promoted copy plus the 4 GiB reserve, accounting for whether both destinations share a filesystem.
+- Retain HTTPS-only redirects, 600-second per-attempt timeout, and two retries.
+- Reuse the existing strict URL validator, provide the URL through a private curl config pipe, and disable ambient curl configuration.
 - Keep operator-supplied digest provenance limits and separate issue #58 scope explicit.
 - Do not claim macOS/Theos, signing, installation, or device validation without authorized evidence.
 
@@ -61,13 +66,37 @@
 - [x] Remove the superseded Python validator/tests only after equivalent Rust coverage exists; remove Python differential invocations from Rust tests.
 - [x] Run Rust tests, formatting, strict Clippy, and workflow shell/action validation.
 
-### Task 3: Review and exact-head verification
+### Task 3: Bounded download and disk preflight
+
+**Files:**
+- Create: `rust/build-inputs/Cargo.lock`
+- Modify: `rust/build-inputs/Cargo.toml`
+- Modify: `rust/build-inputs/src/bin/ipa.rs`
+- Modify: `rust/build-inputs/src/main.rs`
+- Create: `rust/build-inputs/src/lib.rs`
+- Modify: `.github/workflows/buildapp.yml`
+- Modify: `rust/build-inputs/tests/workflow_policy.rs`
+
+**Interfaces:**
+- Add an `ipa download` subcommand that streams `curl` output through Rust to a newly created runner-temp file.
+- Share the existing strict public HTTPS URL policy between input validation and the downloader.
+- Calculate each attempt's byte ceiling as `min(4 GiB, currently available bytes - 4 GiB reserve)`; fail if no space remains above the reserve.
+- Return app-bundle expansion size from full archive verification and check the current destination-volume space before creating either output.
+
+- [x] Add Rust tests for exact-cap success, over-cap rejection without writing the overflow byte, dynamic-cap/reserve boundaries, partial-file cleanup, retries, HTTPS policy, and shared/separate-volume extraction preflight.
+- [ ] Run those focused tests and confirm the new transfer and preflight expectations fail before implementation. Local execution currently stops before compilation because this Windows machine lacks `link.exe`; use exact-head CI for execution.
+- [x] Implement the Rust streamed transfer with HTTPS-only protocols and redirects, a 600-second timeout, two retries, fresh partial files, and generic URL-safe errors.
+- [x] Implement fail-closed free-space queries on macOS and Linux and preflight both output volumes before extraction.
+- [x] Replace workflow `curl --output` with the Rust download subcommand and update Rust workflow-policy coverage.
+- [ ] Run focused and full Rust suites, formatting, strict Clippy, shell/action validation, and exact-head CI.
+
+### Task 4: Review and exact-head verification
 
 **Files:**
 - Modify: `README.md` only if the existing build-isolation explanation needs correction.
 - Modify: existing PR #14 body and RustyNuts #48 tracker after code and CI are final.
 
-- [x] Inspect the final diff and ensure only IPA isolation files and this plan/spec changed.
+- [ ] Inspect the final diff and ensure only IPA isolation code, workflow, and regression files plus this plan/spec changed.
 - [x] Run exact-head Linux source CI and read every job result. The repository does not configure Windows CI; local Windows compilation remains unavailable because `link.exe` is absent.
 - [ ] Refresh PR #14, issue #48, reviews, branch head, and CI immediately before updating their GitHub descriptions.
 - [x] Keep PR #14 Draft and issue #48 open while macOS/Theos compatibility and independent security review are still missing.

@@ -156,7 +156,7 @@ jobs:
         env:
           THEOS: ${{ github.workspace }}/theos
 
-      - name: Prepare YouTube IPA (hash + ZIP validation + isolated extraction)
+      - name: Prepare YouTube IPA (bounded download + hash + ZIP validation + isolated extraction)
         id: prepare_youtube
         shell: bash
         env:
@@ -167,7 +167,7 @@ jobs:
           # Untrusted downloads and ZIP member expansion stay outside checkout.
           staging=$(mktemp -d "${RUNNER_TEMP}/youtube-ipa-XXXXXXXX")
           trap 'rm -rf -- "$staging"' EXIT
-          curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' --retry 2 --max-time 600 --output "$staging/YouTube.ipa" "$YOUTUBE_URL"
+          cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- download --url-env YOUTUBE_URL --output "$staging/YouTube.ipa"
           youtube_version=$(cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- ipa \
             --file "$staging/YouTube.ipa" \
             --sha256 "$IPA_SHA256" \

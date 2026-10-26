@@ -2,6 +2,7 @@ use regex::Regex;
 
 const BUILD_WORKFLOW: &str = include_str!("../../../.github/workflows/buildapp.yml");
 const VALIDATION_WORKFLOW: &str = include_str!("../../../.github/workflows/validate.yml");
+const IPA_SOURCE: &str = include_str!("../src/bin/ipa.rs");
 
 #[test]
 fn builder_is_manual_and_release_is_opt_in() {
@@ -28,7 +29,9 @@ fn publish_write_permission_is_isolated() {
 
 #[test]
 fn download_rejects_insecure_redirects() {
-    assert!(BUILD_WORKFLOW.contains("--proto '=https' --proto-redir '=https'"));
+    assert!(IPA_SOURCE.contains("fn curl_command("));
+    assert!(IPA_SOURCE.contains("\"--proto\""));
+    assert!(IPA_SOURCE.contains("\"--proto-redir\""));
 }
 
 #[test]
@@ -42,17 +45,31 @@ fn ipa_is_validated_and_prepared_by_rust_in_runner_temp() {
 
     assert!(prepare.contains("mktemp -d \"${RUNNER_TEMP}/youtube-ipa-XXXXXXXX\""));
     assert!(prepare.contains("trap 'rm -rf -- \"$staging\"' EXIT"));
+    assert!(prepare.contains("--bin ipa -- download --url-env YOUTUBE_URL"));
+    assert!(prepare.contains("--output \"$staging/YouTube.ipa\""));
     assert!(prepare
         .contains("cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa"));
     assert!(prepare.contains("--staging-dir \"$staging/extracted\""));
     assert!(prepare.contains("--payload-destination main/Payload"));
-    assert!(prepare.contains("--proto '=https' --proto-redir '=https'"));
+    assert!(!prepare.contains("curl "));
     assert!(!prepare.contains("unzip "));
     assert!(!prepare.contains("cp -R "));
     assert!(!prepare.contains("ditto "));
     assert!(!prepare.contains("tar "));
     assert!(!prepare.contains("mkdir main/Payload"));
     assert!(!prepare.contains("--output main/YouTube.ipa"));
+}
+
+#[test]
+fn rust_downloader_retains_the_approved_limits_and_retries() {
+    assert!(IPA_SOURCE.contains("const MAX_IPA_DOWNLOAD_BYTES: u64 = 4 * BYTES_PER_GIB"));
+    assert!(IPA_SOURCE.contains("const DISK_RESERVE_BYTES: u64 = 4 * BYTES_PER_GIB"));
+    assert!(IPA_SOURCE.contains("const DOWNLOAD_ATTEMPTS: usize = 3"));
+    assert!(IPA_SOURCE.contains("\"--max-time\""));
+    assert!(IPA_SOURCE.contains("\"600\""));
+    assert!(IPA_SOURCE.contains("--output"));
+    assert!(IPA_SOURCE.contains("copy_stream_with_limit"));
+    assert!(!IPA_SOURCE.contains("Content-Length"));
 }
 
 #[test]

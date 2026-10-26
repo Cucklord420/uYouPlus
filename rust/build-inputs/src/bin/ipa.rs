@@ -7,9 +7,21 @@ use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
+use uyouplus_inputs::validate_ipa_url;
 use zip::ZipArchive;
 
-fn verified_archive(path: &Path, expected: &str) -> Result<(ZipArchive<File>, String), String> {
+const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
+const MAX_IPA_DOWNLOAD_BYTES: u64 = 4 * BYTES_PER_GIB;
+const DISK_RESERVE_BYTES: u64 = 4 * BYTES_PER_GIB;
+const DOWNLOAD_ATTEMPTS: usize = 3;
+
+fn verified_archive(
+    path: &Path,
+    expected: &str,
+) -> Result<(ZipArchive<File>, String, u64), String> {
     let sha = Regex::new(r"(?i)^[0-9a-f]{64}$").unwrap();
     if !sha.is_match(expected) {
         return Err("Invalid SHA-256 digest".into());
@@ -34,6 +46,7 @@ fn verified_archive(path: &Path, expected: &str) -> Result<(ZipArchive<File>, St
     }
     let mut seen = HashSet::new();
     let mut total = 0u64;
+    let mut app_bundle_size = 0u64;
     let mut manifest_index = None;
     for index in 0..archive.len() {
         let member = archive.by_index(index).map_err(|e| e.to_string())?;
@@ -83,6 +96,13 @@ fn verified_archive(path: &Path, expected: &str) -> Result<(ZipArchive<File>, St
         total = total
             .checked_add(member.size())
             .ok_or("IPA decompressed size exceeds safety limit")?;
+        if !member.is_dir()
+            && (name == "Payload/YouTube.app/" || name.starts_with("Payload/YouTube.app/"))
+        {
+            app_bundle_size = app_bundle_size
+                .checked_add(member.size())
+                .ok_or("IPA decompressed size exceeds safety limit")?;
+        }
         if total > 8 * 1024 * 1024 * 1024 {
             return Err("IPA decompressed size exceeds safety limit".into());
         }
@@ -121,11 +141,322 @@ fn verified_archive(path: &Path, expected: &str) -> Result<(ZipArchive<File>, St
     if !pattern.is_match(version) {
         return Err("Invalid YouTube CFBundleVersion".into());
     }
-    Ok((archive, version.to_owned()))
+    Ok((archive, version.to_owned(), app_bundle_size))
 }
 
 fn verify(path: &Path, expected: &str) -> Result<String, String> {
-    verified_archive(path, expected).map(|(_, version)| version)
+    verified_archive(path, expected).map(|(_, version, _)| version)
+}
+
+#[derive(Debug)]
+enum StreamError {
+    LimitExceeded,
+    Io,
+    OutputOpen,
+    CleanupFailed,
+}
+
+fn transfer_limit_for_free_space(free_bytes: u64) -> Result<u64, String> {
+    let available_above_reserve = free_bytes.saturating_sub(DISK_RESERVE_BYTES);
+    if available_above_reserve == 0 {
+        return Err("Insufficient free space for the IPA download reserve".into());
+    }
+    Ok(available_above_reserve.min(MAX_IPA_DOWNLOAD_BYTES))
+}
+
+fn copy_stream_with_limit<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    limit: u64,
+) -> Result<u64, StreamError> {
+    let mut copied = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        // Read at most one byte beyond the remaining allowance so an oversized
+        // stream is detected without ever writing its overflow byte.
+        let remaining = limit - copied;
+        let read_limit = remaining.saturating_add(1).min(buffer.len() as u64) as usize;
+        let count = match reader.read(&mut buffer[..read_limit]) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(StreamError::Io),
+            Ok(count) => count,
+        };
+        if count == 0 {
+            return Ok(copied);
+        }
+        if count as u64 > remaining {
+            return Err(StreamError::LimitExceeded);
+        }
+        writer
+            .write_all(&buffer[..count])
+            .map_err(|_| StreamError::Io)?;
+        copied += count as u64;
+    }
+}
+
+fn cleanup_download_partial(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("Unable to remove a partial IPA download".into()),
+    }
+}
+
+fn write_stream_to_new_file<R: Read>(
+    path: &Path,
+    mut reader: R,
+    limit: u64,
+) -> Result<u64, StreamError> {
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|_| StreamError::OutputOpen)?;
+    let result = copy_stream_with_limit(&mut reader, &mut output, limit).and_then(|copied| {
+        output.flush().map_err(|_| StreamError::Io)?;
+        Ok(copied)
+    });
+    if result.is_err() {
+        drop(output);
+        if cleanup_download_partial(path).is_err() {
+            return Err(StreamError::CleanupFailed);
+        }
+    }
+    result
+}
+
+fn validate_download_url(value: &str) -> Result<(), String> {
+    validate_ipa_url(value).map_err(str::to_owned)
+}
+
+fn ensure_absent_file(path: &Path) -> Result<PathBuf, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => return Err("IPA download destination already exists".into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err("Unable to inspect IPA download destination".into()),
+    }
+    let name = path
+        .file_name()
+        .ok_or("IPA download path must name a file")?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let parent =
+        fs::canonicalize(parent).map_err(|_| "Unable to inspect IPA download directory")?;
+    Ok(parent.join(name))
+}
+
+fn curl_command(url_environment: &str) -> Command {
+    // Read the URL from a private config pipe instead of exposing it in argv.
+    let mut command = Command::new("curl");
+    command
+        .args([
+            "--disable",
+            "--fail",
+            "--location",
+            "--silent",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--max-time",
+            "600",
+            "--output",
+            "-",
+            "--config",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env_remove(url_environment);
+    command
+}
+
+fn curl_config_line(url: &str) -> String {
+    let escaped = url.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("url = \"{escaped}\"\n")
+}
+
+enum AttemptFailure {
+    TooLarge,
+    Retryable,
+    Fatal(String),
+}
+
+fn curl_attempt(
+    url: &str,
+    url_environment: &str,
+    path: &Path,
+    limit: u64,
+) -> Result<(), AttemptFailure> {
+    let mut child = match curl_command(url_environment).spawn() {
+        Ok(child) => child,
+        Err(_) => {
+            return Err(AttemptFailure::Fatal(
+                "Unable to start the HTTPS download client".into(),
+            ));
+        }
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(AttemptFailure::Fatal(
+            "HTTPS download client did not accept its configuration".into(),
+        ));
+    };
+    if stdin.write_all(curl_config_line(url).as_bytes()).is_err() {
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(AttemptFailure::Fatal(
+            "Unable to configure the HTTPS download client".into(),
+        ));
+    }
+    drop(stdin);
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(AttemptFailure::Fatal(
+            "HTTPS download client did not provide a stream".into(),
+        ));
+    };
+
+    let streamed = write_stream_to_new_file(path, stdout, limit);
+    if let Err(error) = streamed {
+        let _ = child.kill();
+        let _ = child.wait();
+        return match error {
+            StreamError::LimitExceeded => Err(AttemptFailure::TooLarge),
+            StreamError::Io => Err(AttemptFailure::Retryable),
+            StreamError::OutputOpen => Err(AttemptFailure::Fatal(
+                "Unable to create IPA download file".into(),
+            )),
+            StreamError::CleanupFailed => Err(AttemptFailure::Fatal(
+                "Unable to remove a partial IPA download".into(),
+            )),
+        };
+    }
+
+    match child.wait() {
+        Ok(status) if status.success() => Ok(()),
+        _ => {
+            if cleanup_download_partial(path).is_err() {
+                return Err(AttemptFailure::Fatal(
+                    "Unable to remove a partial IPA download".into(),
+                ));
+            }
+            Err(AttemptFailure::Retryable)
+        }
+    }
+}
+
+fn retry_download<T, F, B>(mut attempt: F, mut backoff: B) -> Result<T, String>
+where
+    F: FnMut() -> Result<T, AttemptFailure>,
+    B: FnMut(usize),
+{
+    for attempt_number in 0..DOWNLOAD_ATTEMPTS {
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(AttemptFailure::Fatal(error)) => return Err(error),
+            Err(AttemptFailure::TooLarge) => {
+                return Err("IPA download exceeded the available byte limit".into());
+            }
+            Err(AttemptFailure::Retryable) if attempt_number + 1 < DOWNLOAD_ATTEMPTS => {
+                backoff(attempt_number);
+            }
+            Err(AttemptFailure::Retryable) => {}
+        }
+    }
+    Err("IPA download failed after two retries".into())
+}
+
+fn download_ipa(url: &str, url_environment: &str, path: &Path) -> Result<(), String> {
+    validate_download_url(url)?;
+    let destination = ensure_absent_file(path)?;
+    let parent = destination
+        .parent()
+        .ok_or("IPA download path must name a file")?;
+
+    retry_download(
+        || {
+            let disk_space = filesystem_space(parent).map_err(AttemptFailure::Fatal)?;
+            let limit = transfer_limit_for_free_space(disk_space.free_bytes)
+                .map_err(AttemptFailure::Fatal)?;
+            curl_attempt(url, url_environment, &destination, limit)
+        },
+        |attempt| thread::sleep(Duration::from_secs(attempt as u64 + 1)),
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DiskSpace {
+    volume: u64,
+    free_bytes: u64,
+}
+
+#[cfg(unix)]
+fn filesystem_space(path: &Path) -> Result<DiskSpace, String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::metadata(path).map_err(|_| "Unable to inspect available disk space")?;
+    if !metadata.is_dir() {
+        return Err("Disk-space query path is not a directory".into());
+    }
+    let c_path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| "Invalid path for disk-space query")?;
+    let mut native = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `c_path` is NUL-terminated and `native` points to writable storage
+    // for the platform's `statvfs` result structure.
+    let result = unsafe { libc::statvfs(c_path.as_ptr(), native.as_mut_ptr()) };
+    if result != 0 {
+        return Err("Unable to inspect available disk space".into());
+    }
+    // SAFETY: a successful `statvfs` call initialized the result structure.
+    let native = unsafe { native.assume_init() };
+    let block_size = if native.f_frsize == 0 {
+        native.f_bsize as u128
+    } else {
+        native.f_frsize as u128
+    };
+    let free_bytes = ((native.f_bavail as u128) * block_size).min(u64::MAX as u128) as u64;
+    Ok(DiskSpace {
+        volume: metadata.dev(),
+        free_bytes,
+    })
+}
+
+#[cfg(not(unix))]
+fn filesystem_space(_path: &Path) -> Result<DiskSpace, String> {
+    Err("Disk-space preflight is supported only on macOS and Linux".into())
+}
+
+fn ensure_preflight_space(
+    app_bundle_size: u64,
+    staging: DiskSpace,
+    payload: DiskSpace,
+) -> Result<(), String> {
+    let per_copy_with_reserve = app_bundle_size
+        .checked_add(DISK_RESERVE_BYTES)
+        .ok_or("IPA extraction space requirement overflow")?;
+    if staging.volume == payload.volume {
+        let both_copies_with_reserve = app_bundle_size
+            .checked_mul(2)
+            .and_then(|size| size.checked_add(DISK_RESERVE_BYTES))
+            .ok_or("IPA extraction space requirement overflow")?;
+        if staging.free_bytes.min(payload.free_bytes) < both_copies_with_reserve {
+            return Err("Insufficient free space for IPA extraction and promotion".into());
+        }
+    } else if staging.free_bytes < per_copy_with_reserve
+        || payload.free_bytes < per_copy_with_reserve
+    {
+        return Err("Insufficient free space for IPA extraction and promotion".into());
+    }
+    Ok(())
 }
 
 fn ensure_absent_output(path: &Path) -> Result<PathBuf, String> {
@@ -170,8 +501,10 @@ fn set_archive_mode(_path: &Path, _mode: u32, _directory: bool) -> Result<(), St
 fn extract_app_bundle<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     staging_dir: &Path,
+    max_app_bundle_size: u64,
 ) -> Result<(), String> {
     let mut directory_modes = Vec::new();
+    let mut extracted_bytes = 0u64;
 
     for index in 0..archive.len() {
         let mut member = archive.by_index(index).map_err(|error| error.to_string())?;
@@ -209,12 +542,36 @@ fn extract_app_bundle<R: Read + Seek>(
                 .create_new(true)
                 .open(&target)
                 .map_err(|error| error.to_string())?;
-            io::copy(&mut member, &mut output).map_err(|error| error.to_string())?;
+            let expected_size = member.size();
+            let remaining = max_app_bundle_size
+                .checked_sub(extracted_bytes)
+                .ok_or("IPA expanded beyond its declared app size")?;
+            let copied =
+                copy_stream_with_limit(&mut member, &mut output, remaining).map_err(|error| {
+                    match error {
+                        StreamError::LimitExceeded => {
+                            "IPA expanded beyond its declared app size".to_owned()
+                        }
+                        StreamError::Io | StreamError::OutputOpen | StreamError::CleanupFailed => {
+                            "Unable to extract IPA app member".to_owned()
+                        }
+                    }
+                })?;
+            if copied != expected_size {
+                return Err("IPA app member size did not match its declaration".into());
+            }
+            extracted_bytes = extracted_bytes
+                .checked_add(copied)
+                .ok_or("IPA decompressed size exceeds safety limit")?;
             output.flush().map_err(|error| error.to_string())?;
             if let Some(mode) = member.unix_mode() {
                 set_archive_mode(&target, mode, false)?;
             }
         }
+    }
+
+    if extracted_bytes != max_app_bundle_size {
+        return Err("IPA app bundle size did not match its declaration".into());
     }
 
     directory_modes.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
@@ -268,15 +625,44 @@ fn prepare(
     staging_dir: &Path,
     payload_destination: &Path,
 ) -> Result<String, String> {
+    prepare_with_space_provider(
+        path,
+        expected,
+        staging_dir,
+        payload_destination,
+        filesystem_space,
+    )
+}
+
+fn prepare_with_space_provider<F>(
+    path: &Path,
+    expected: &str,
+    staging_dir: &Path,
+    payload_destination: &Path,
+    mut space_for_path: F,
+) -> Result<String, String>
+where
+    F: FnMut(&Path) -> Result<DiskSpace, String>,
+{
     let staging = ensure_absent_output(staging_dir)?;
     let payload = ensure_absent_output(payload_destination)?;
     if staging.starts_with(&payload) || payload.starts_with(&staging) {
         return Err("Staging and payload destinations must not overlap".into());
     }
 
-    let (mut archive, version) = verified_archive(path, expected)?;
+    let (mut archive, version, app_bundle_size) = verified_archive(path, expected)?;
+    let staging_parent = staging
+        .parent()
+        .ok_or("Staging destination must have an existing parent")?;
+    let payload_parent = payload
+        .parent()
+        .ok_or("Payload destination must have an existing parent")?;
+    let staging_space = space_for_path(staging_parent)?;
+    let payload_space = space_for_path(payload_parent)?;
+    ensure_preflight_space(app_bundle_size, staging_space, payload_space)?;
+
     checked_new_directory(&staging)?;
-    if let Err(error) = extract_app_bundle(&mut archive, &staging) {
+    if let Err(error) = extract_app_bundle(&mut archive, &staging, app_bundle_size) {
         let _ = fs::remove_dir_all(&staging);
         return Err(error);
     }
@@ -294,10 +680,40 @@ fn prepare(
     Ok(version)
 }
 
+fn download_cli(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut args = args;
+    let mut url_environment = None;
+    let mut output = None;
+    while let Some(flag) = args.next() {
+        let value = args
+            .next()
+            .ok_or_else(|| "Missing download option value".to_owned())?;
+        match flag.as_str() {
+            "--url-env" => url_environment = Some(value),
+            "--output" => output = Some(value),
+            _ => return Err("Invalid download option".into()),
+        }
+    }
+    let url_environment = url_environment.ok_or("Missing URL environment variable name")?;
+    let url = std::env::var(url_environment).map_err(|_| "Missing IPA download URL")?;
+    let output = output.ok_or("Missing IPA download output path")?;
+    download_ipa(&url, &url_environment, Path::new(&output))
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() != Some("ipa") {
-        eprintln!("Usage: ipa ipa --file PATH --sha256 HEX");
+    let command = args.next();
+    if command.as_deref() == Some("download") {
+        if let Err(error) = download_cli(args) {
+            eprintln!("IPA download failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if command.as_deref() != Some("ipa") {
+        eprintln!(
+            "Usage: ipa ipa --file PATH --sha256 HEX | ipa download --url-env NAME --output PATH"
+        );
         std::process::exit(2);
     }
     let mut path = None;
@@ -562,5 +978,201 @@ mod tests {
         let hash = format!("{:x}", Sha256::digest(b"not a zip"));
         assert!(verify(&file, &hash).is_err());
         assert_eq!(std::fs::read(file).unwrap(), b"not a zip");
+    }
+
+    #[test]
+    fn transfer_limit_reserves_space_and_never_exceeds_the_hard_cap() {
+        assert!(transfer_limit_for_free_space(DISK_RESERVE_BYTES - 1).is_err());
+        assert!(transfer_limit_for_free_space(DISK_RESERVE_BYTES).is_err());
+        assert_eq!(
+            transfer_limit_for_free_space(DISK_RESERVE_BYTES + 2 * 1024 * 1024).unwrap(),
+            2 * 1024 * 1024
+        );
+        assert_eq!(
+            transfer_limit_for_free_space(DISK_RESERVE_BYTES + MAX_IPA_DOWNLOAD_BYTES * 2).unwrap(),
+            MAX_IPA_DOWNLOAD_BYTES
+        );
+    }
+
+    #[test]
+    fn bounded_stream_accepts_exact_limit_and_never_writes_overflow_byte() {
+        let mut exact = Vec::new();
+        let mut exact_reader = &b"four"[..];
+        assert_eq!(
+            copy_stream_with_limit(&mut exact_reader, &mut exact, 4).unwrap(),
+            4
+        );
+        assert_eq!(exact, b"four");
+
+        let mut too_large = Vec::new();
+        let mut too_large_reader = &b"fives"[..];
+        assert!(copy_stream_with_limit(&mut too_large_reader, &mut too_large, 4).is_err());
+        assert_eq!(too_large, b"five");
+    }
+
+    #[test]
+    fn failed_stream_removes_its_partial_download() {
+        struct FailingReader(bool);
+        impl Read for FailingReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if self.0 {
+                    return Err(io::Error::other("synthetic transfer failure"));
+                }
+                self.0 = true;
+                buffer[..3].copy_from_slice(b"ipa");
+                Ok(3)
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let partial = temp.path().join("partial.ipa");
+        assert!(write_stream_to_new_file(&partial, FailingReader(false), 8).is_err());
+        assert!(
+            !partial.exists(),
+            "failed transfers must not leave partials"
+        );
+
+        let oversized = temp.path().join("oversized.ipa");
+        assert!(write_stream_to_new_file(&oversized, &b"oversized"[..], 4).is_err());
+        assert!(!oversized.exists(), "over-limit transfers must be removed");
+    }
+
+    #[test]
+    fn download_url_requires_https() {
+        assert!(validate_download_url("http://example.com/app.ipa").is_err());
+        assert!(validate_download_url("https://example.com/app.ipa").is_ok());
+    }
+
+    #[test]
+    fn curl_protocol_timeout_and_stdout_options_are_preserved() {
+        let command = curl_command("YOUTUBE_URL");
+        let args: Vec<String> = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args.first().map(String::as_str), Some("--disable"));
+        let proto = args
+            .iter()
+            .position(|argument| argument == "--proto")
+            .unwrap();
+        let redirect = args
+            .iter()
+            .position(|argument| argument == "--proto-redir")
+            .unwrap();
+        let timeout = args
+            .iter()
+            .position(|argument| argument == "--max-time")
+            .unwrap();
+        let output = args
+            .iter()
+            .position(|argument| argument == "--output")
+            .unwrap();
+        assert_eq!(args[proto + 1], "=https");
+        assert_eq!(args[redirect + 1], "=https");
+        assert_eq!(args[timeout + 1], "600");
+        assert_eq!(args[output + 1], "-");
+        assert!(!args.iter().any(|argument| argument == "--url"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--config" && pair[1] == "-"));
+        assert!(command.get_envs().any(|(name, value)| {
+            name == std::ffi::OsStr::new("YOUTUBE_URL") && value.is_none()
+        }));
+    }
+
+    #[test]
+    fn downloader_makes_two_retries_after_the_first_attempt() {
+        let mut attempts = 0;
+        let mut backoffs = 0;
+        let result = retry_download(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(AttemptFailure::Retryable)
+                } else {
+                    Ok("downloaded")
+                }
+            },
+            |_| backoffs += 1,
+        );
+        assert_eq!(result.unwrap(), "downloaded");
+        assert_eq!(attempts, 3);
+        assert_eq!(backoffs, 2);
+    }
+
+    #[test]
+    fn extraction_preflight_accounts_for_both_copies_and_reserve() {
+        let app_size = 1024;
+        let same_volume_required = 2 * app_size + DISK_RESERVE_BYTES;
+        assert!(ensure_preflight_space(
+            app_size,
+            DiskSpace {
+                volume: 7,
+                free_bytes: same_volume_required
+            },
+            DiskSpace {
+                volume: 7,
+                free_bytes: same_volume_required
+            },
+        )
+        .is_ok());
+        assert!(ensure_preflight_space(
+            app_size,
+            DiskSpace {
+                volume: 7,
+                free_bytes: same_volume_required - 1
+            },
+            DiskSpace {
+                volume: 7,
+                free_bytes: same_volume_required - 1
+            },
+        )
+        .is_err());
+
+        let separate_volume_required = app_size + DISK_RESERVE_BYTES;
+        assert!(ensure_preflight_space(
+            app_size,
+            DiskSpace {
+                volume: 7,
+                free_bytes: separate_volume_required
+            },
+            DiskSpace {
+                volume: 9,
+                free_bytes: separate_volume_required
+            },
+        )
+        .is_ok());
+        assert!(ensure_preflight_space(
+            app_size,
+            DiskSpace {
+                volume: 7,
+                free_bytes: separate_volume_required
+            },
+            DiskSpace {
+                volume: 9,
+                free_bytes: separate_volume_required - 1
+            },
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn insufficient_space_fails_before_creating_staging_or_payload() {
+        let (temp, sha) = fixture(&[("Payload/YouTube.app/file", b"synthetic app data")]);
+        let ipa = temp.path().join("fixture.ipa");
+        let staging = temp.path().join("runner-temp/extracted");
+        let payload = temp.path().join("checkout/Payload");
+        fs::create_dir_all(staging.parent().unwrap()).unwrap();
+        fs::create_dir_all(payload.parent().unwrap()).unwrap();
+
+        let result = prepare_with_space_provider(&ipa, &sha, &staging, &payload, |_| {
+            Ok(DiskSpace {
+                volume: 1,
+                free_bytes: DISK_RESERVE_BYTES,
+            })
+        });
+        assert!(result.is_err());
+        assert!(!staging.exists());
+        assert!(!payload.exists());
     }
 }
