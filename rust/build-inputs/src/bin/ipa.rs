@@ -695,7 +695,7 @@ fn download_cli(args: impl Iterator<Item = String>) -> Result<(), String> {
         }
     }
     let url_environment = url_environment.ok_or("Missing URL environment variable name")?;
-    let url = std::env::var(url_environment).map_err(|_| "Missing IPA download URL")?;
+    let url = std::env::var(&url_environment).map_err(|_| "Missing IPA download URL")?;
     let output = output.ok_or("Missing IPA download output path")?;
     download_ipa(&url, &url_environment, Path::new(&output))
 }
