@@ -184,12 +184,13 @@ fn copy_stream_with_limit<R: Read, W: Write>(
         if count == 0 {
             return Ok(copied);
         }
+        let writable = remaining.min(count as u64) as usize;
+        writer
+            .write_all(&buffer[..writable])
+            .map_err(|_| StreamError::Io)?;
         if count as u64 > remaining {
             return Err(StreamError::LimitExceeded);
         }
-        writer
-            .write_all(&buffer[..count])
-            .map_err(|_| StreamError::Io)?;
         copied += count as u64;
     }
 }
