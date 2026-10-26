@@ -144,7 +144,10 @@ fn ignores_symlinked_app_candidates() {
 
     let output = fixture.run();
 
-    assert!(!output.status.success(), "a symlink is not an app directory");
+    assert!(
+        !output.status.success(),
+        "a symlink is not an app directory"
+    );
     assert!(
         fixture.invoked_ipa().is_none(),
         "make must not receive a symlinked app candidate"
