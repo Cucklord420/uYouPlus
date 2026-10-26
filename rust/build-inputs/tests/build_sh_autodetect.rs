@@ -89,12 +89,7 @@ fn main() {
             .stderr(Stdio::piped())
             .spawn()
             .expect("bash is required for build.sh integration tests");
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(b"\n")
-            .unwrap();
+        child.stdin.take().unwrap().write_all(b"\n").unwrap();
         child.wait_with_output().unwrap()
     }
 
@@ -142,7 +137,7 @@ fn ignores_symlinked_app_candidates() {
     use std::os::unix::fs::symlink;
 
     let fixture = Fixture::new();
-    let actual = fixture.root.join("actual.app");
+    let actual = fixture.root.join("actual-bundle");
     let link = fixture.root.join("linked.app");
     fs::create_dir(&actual).unwrap();
     symlink(&actual, &link).unwrap();
