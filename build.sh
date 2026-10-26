@@ -1,23 +1,25 @@
 #!/bin/bash
 # To build, either place the IPA file in the project's root directory, or get the path to the IPA, then run `./build.sh`
 
-read -p $'\e[34m==> \e[1;39mPath to the decrypted YouTube.ipa or YouTube.app. If nothing is provied, any ipa/app in the project\'s root directory will be used: ' PATHTOYT
+read -r -p $'\e[34m==> \e[1;39mPath to the decrypted YouTube.ipa or YouTube.app. If nothing is provided, any ipa/app in the project\'s root directory will be used: ' PATHTOYT
 
 # Check if PATHTOYT is empty
 if [ -z "$PATHTOYT" ]; then
-    # Look for ipa/app files in the current directory
-    IPAS=$(find . -maxdepth 1 -type f \( -name "*.ipa" -o -name "*.app" \))
-    
-    # Check if there are two or more ipa/app files
-    COUNT=$(echo "$IPAS" | wc -l)
-    
+    # Keep paths intact (including whitespace/newlines) and do not follow symlinks.
+    CANDIDATES=()
+    while IFS= read -r -d '' CANDIDATE; do
+        CANDIDATES+=("$CANDIDATE")
+    done < <(find . -maxdepth 1 \( -type f -name "*.ipa" -o -type d -name "*.app" \) -print0)
+
+    COUNT=${#CANDIDATES[@]}
+
     if [ "$COUNT" -ge 2 ]; then
-        echo "❌ Error: Multiple IPA/app files found in the project's root directory directory. Make sure there is only one ipa."
+        echo "❌ Error: Multiple IPA/app candidates found in the project's root directory. Make sure there is only one."
         exit 1
-        
-    elif [ -n "$IPAS" ]; then
-        PATHTOYT=$(echo "$IPAS" | head -n 1)
-        
+
+    elif [ "$COUNT" -eq 1 ]; then
+        PATHTOYT=${CANDIDATES[0]}
+
     else
         echo "❌ Error: No IPA/app file found in the project's root directory directory."
         exit 1
