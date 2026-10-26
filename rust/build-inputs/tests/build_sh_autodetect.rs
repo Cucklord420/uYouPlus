@@ -3,7 +3,6 @@
 use std::{
     env, fs,
     io::Write,
-    os::unix::ffi::OsStrExt,
     path::PathBuf,
     process::{Command, Stdio},
 };
@@ -112,9 +111,10 @@ fn discovers_a_root_level_app_directory_without_newline_splitting() {
 
     let _output = fixture.run();
 
+    let expected: &[u8] = b"./YouTube App\nOriginal.app";
     assert_eq!(
         fixture.invoked_ipa().as_deref(),
-        Some(b"./YouTube App\nOriginal.app".as_slice()),
+        Some(expected),
         "the root .app directory must reach make as one quoted path"
     );
 }
@@ -127,7 +127,10 @@ fn treats_regular_ipa_and_app_directory_as_two_candidates() {
 
     let output = fixture.run();
 
-    assert!(!output.status.success(), "multiple candidates must be rejected");
+    assert!(
+        !output.status.success(),
+        "multiple candidates must be rejected"
+    );
     assert!(
         fixture.invoked_ipa().is_none(),
         "make must not run when candidate selection is ambiguous"
@@ -161,7 +164,10 @@ fn ignores_ipa_directories_and_app_regular_files() {
 
     let output = fixture.run();
 
-    assert!(!output.status.success(), "wrong candidate types must be rejected");
+    assert!(
+        !output.status.success(),
+        "wrong candidate types must be rejected"
+    );
     assert!(
         fixture.invoked_ipa().is_none(),
         "make must not run when no valid candidate exists"
