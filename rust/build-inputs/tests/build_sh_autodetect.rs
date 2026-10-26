@@ -79,7 +79,7 @@ fn main() {
         path_entries.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
         let path = env::join_paths(path_entries).unwrap();
 
-        let mut child = Command::new("bash")
+        let mut child = Command::new("/bin/bash")
             .arg(&self.script)
             .current_dir(&self.root)
             .env("PATH", path)
@@ -88,7 +88,7 @@ fn main() {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("bash is required for build.sh integration tests");
+            .expect("/bin/bash is required for build.sh integration tests");
         child.stdin.take().unwrap().write_all(b"\n").unwrap();
         child.wait_with_output().unwrap()
     }
