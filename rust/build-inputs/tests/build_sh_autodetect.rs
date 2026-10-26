@@ -115,6 +115,33 @@ fn discovers_a_root_level_app_directory_without_newline_splitting() {
 }
 
 #[test]
+fn discovers_a_root_level_regular_ipa_file() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("YouTube.ipa"), b"synthetic").unwrap();
+
+    let _output = fixture.run();
+
+    assert_eq!(
+        fixture.invoked_ipa().as_deref(),
+        Some(&b"./YouTube.ipa"[..]),
+        "the root .ipa file must reach make as one quoted path"
+    );
+}
+
+#[test]
+fn rejects_an_empty_root_without_invoking_make() {
+    let fixture = Fixture::new();
+
+    let output = fixture.run();
+
+    assert!(!output.status.success(), "an empty root must be rejected");
+    assert!(
+        fixture.invoked_ipa().is_none(),
+        "make must not run when there are no candidates"
+    );
+}
+
+#[test]
 fn treats_regular_ipa_and_app_directory_as_two_candidates() {
     let fixture = Fixture::new();
     fs::write(fixture.root.join("YouTube.ipa"), b"synthetic").unwrap();
