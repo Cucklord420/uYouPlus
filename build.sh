@@ -3,25 +3,19 @@
 
 read -r -p $'\e[34m==> \e[1;39mPath to the decrypted YouTube.ipa or YouTube.app. If nothing is provided, any ipa/app in the project\'s root directory will be used: ' PATHTOYT
 
+discover_root_input() {
+    if [ -n "${UYOUPLUS_INPUTS_BIN:-}" ]; then
+        "$UYOUPLUS_INPUTS_BIN" discover-root-input
+    else
+        cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyouplus-inputs -- discover-root-input
+    fi
+}
+
 # Check if PATHTOYT is empty
 if [ -z "$PATHTOYT" ]; then
-    # Keep paths intact (including whitespace/newlines) and do not follow symlinks.
-    CANDIDATES=()
-    while IFS= read -r -d '' CANDIDATE; do
-        CANDIDATES+=("$CANDIDATE")
-    done < <(find . -maxdepth 1 \( -type f -name "*.ipa" -o -type d -name "*.app" \) -print0)
-
-    COUNT=${#CANDIDATES[@]}
-
-    if [ "$COUNT" -ge 2 ]; then
-        echo "❌ Error: Multiple IPA/app candidates found in the project's root directory. Make sure there is only one."
-        exit 1
-
-    elif [ "$COUNT" -eq 1 ]; then
-        PATHTOYT=${CANDIDATES[0]}
-
-    else
-        echo "❌ Error: No IPA/app file found in the project's root directory directory."
+    # The Rust helper writes exactly one native path followed by NUL.
+    if ! IFS= read -r -d '' PATHTOYT < <(discover_root_input); then
+        echo "❌ Error: Could not discover one root-level IPA/app candidate."
         exit 1
     fi
 fi

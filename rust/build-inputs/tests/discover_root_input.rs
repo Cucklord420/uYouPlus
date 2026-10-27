@@ -20,11 +20,24 @@ fn build_script_delegates_discovery_to_rust() {
     let script = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build.sh"))
         .unwrap();
 
-    assert!(script.contains("discover-root-input"));
+    for required_fragment in [
+        "UYOUPLUS_INPUTS_BIN",
+        "discover-root-input",
+        "read -r -d '' PATHTOYT",
+        "cargo run --quiet",
+        "--manifest-path rust/build-inputs/Cargo.toml",
+        "--bin uyouplus-inputs",
+    ] {
+        assert!(
+            script.contains(required_fragment),
+            "build.sh must use Rust root discovery: {required_fragment}"
+        );
+    }
     for bash_discovery in [
         "find . -maxdepth 1",
         "CANDIDATES=()",
         "while IFS= read -r -d '' CANDIDATE",
+        "for CANDIDATE in",
     ] {
         assert!(
             !script.contains(bash_discovery),
