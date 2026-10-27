@@ -1069,7 +1069,9 @@ mod tests {
 
     #[test]
     fn rejects_filesystem_equivalent_archive_paths() {
-        let cases: &[(&str, &[(&str, &[u8])])] = &[
+        type CollisionCase<'a> = (&'a str, &'a [(&'a str, &'a [u8])]);
+
+        let cases: &[CollisionCase<'_>] = &[
             (
                 "Info.plist case alias",
                 &[("Payload/YouTube.app/info.plist", b"alternate plist")],
