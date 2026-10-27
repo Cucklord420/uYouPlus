@@ -80,6 +80,21 @@ fn discovers_one_regular_ipa_and_preserves_spaces_and_newlines() {
 }
 
 #[test]
+fn discovers_a_regular_ipa_whose_name_is_only_the_suffix() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join(".ipa"), b"synthetic").unwrap();
+
+    let output = run(temp.path());
+
+    assert!(
+        output.status.success(),
+        "discovery failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"./.ipa\0");
+}
+
+#[test]
 fn preserves_non_utf8_path_bytes() {
     let temp = tempfile::tempdir().unwrap();
     let name = OsString::from_vec(b"YouTube-\xff.ipa".to_vec());
@@ -115,6 +130,21 @@ fn discovers_one_app_directory_with_newlines() {
     expected.extend_from_slice(name.as_bytes());
     expected.push(0);
     assert_eq!(output.stdout, expected);
+}
+
+#[test]
+fn discovers_an_app_directory_whose_name_is_only_the_suffix() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join(".app")).unwrap();
+
+    let output = run(temp.path());
+
+    assert!(
+        output.status.success(),
+        "discovery failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"./.app\0");
 }
 
 #[test]
