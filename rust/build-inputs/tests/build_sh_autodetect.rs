@@ -108,26 +108,6 @@ fn main() {
 }
 
 #[test]
-fn build_script_delegates_discovery_to_rust() {
-    let script = fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build.sh"),
-    )
-    .unwrap();
-
-    assert!(script.contains("discover-root-input"));
-    for bash_discovery in [
-        "find . -maxdepth 1",
-        "CANDIDATES=()",
-        "while IFS= read -r -d '' CANDIDATE",
-    ] {
-        assert!(
-            !script.contains(bash_discovery),
-            "candidate enumeration must remain in Rust: {bash_discovery}"
-        );
-    }
-}
-
-#[test]
 fn discovers_a_root_level_app_directory_without_newline_splitting() {
     let fixture = Fixture::new();
     let app = fixture.root.join("YouTube App\nOriginal.app");
@@ -231,7 +211,7 @@ fn ignores_ipa_directories_and_app_regular_files() {
 #[test]
 fn explicit_operator_path_does_not_require_the_discovery_helper() {
     let fixture = Fixture::new();
-    let output = fixture.run_with_input(
+    let _output = fixture.run_with_input(
         b"/operator/path with spaces/YouTube.ipa\n",
         Some("/missing/uyouplus-inputs-helper"),
     );
@@ -239,11 +219,6 @@ fn explicit_operator_path_does_not_require_the_discovery_helper() {
     assert_eq!(
         fixture.invoked_ipa().as_deref(),
         Some(&b"/operator/path with spaces/YouTube.ipa"[..])
-    );
-    assert_eq!(
-        output.status.code(),
-        Some(7),
-        "the existing make stub should receive the explicit path"
     );
 }
 

@@ -15,6 +15,24 @@ fn run(root: &Path) -> Output {
         .expect("discovery helper should start")
 }
 
+#[test]
+fn build_script_delegates_discovery_to_rust() {
+    let script = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build.sh"))
+        .unwrap();
+
+    assert!(script.contains("discover-root-input"));
+    for bash_discovery in [
+        "find . -maxdepth 1",
+        "CANDIDATES=()",
+        "while IFS= read -r -d '' CANDIDATE",
+    ] {
+        assert!(
+            !script.contains(bash_discovery),
+            "candidate enumeration must remain in Rust: {bash_discovery}"
+        );
+    }
+}
+
 fn assert_rejected_without_path(root: &Path) {
     let output = run(root);
     assert!(!output.status.success(), "invalid candidates must fail");
