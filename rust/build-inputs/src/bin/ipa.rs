@@ -1,15 +1,17 @@
 // IPA checksum and ZIP/plist verifier with isolated app-bundle preparation.
 // The supplied IPA is preserved; archive contents are promoted only after verification.
 
+use caseless::Caseless;
 use regex::Regex;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
+use unicode_normalization::UnicodeNormalization;
 use uyouplus_inputs::validate_ipa_url;
 use zip::ZipArchive;
 
@@ -17,6 +19,103 @@ const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 const MAX_IPA_DOWNLOAD_BYTES: u64 = 4 * BYTES_PER_GIB;
 const DISK_RESERVE_BYTES: u64 = 4 * BYTES_PER_GIB;
 const DOWNLOAD_ATTEMPTS: usize = 3;
+const ARCHIVE_PATH_COLLISION: &str = "IPA archive path collision or file/directory conflict";
+const MAX_ARCHIVE_PATH_COMPONENTS_PER_ENTRY: usize = 128;
+const MAX_ARCHIVE_PATH_COMPONENTS: usize = 1_000_000;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArchivePathKind {
+    Directory,
+    File,
+}
+
+struct ArchivePathNode {
+    spelling: String,
+    kind: ArchivePathKind,
+    explicit: bool,
+    children: HashMap<String, ArchivePathNode>,
+}
+
+impl ArchivePathNode {
+    fn root() -> Self {
+        Self {
+            spelling: String::new(),
+            kind: ArchivePathKind::Directory,
+            explicit: false,
+            children: HashMap::new(),
+        }
+    }
+}
+
+fn canonical_path_component(component: &str) -> String {
+    // Unicode canonical caseless matching is NFD, full default case folding, then NFD.
+    component.nfd().default_case_fold().nfd().collect()
+}
+
+fn register_archive_path(
+    root: &mut ArchivePathNode,
+    name: &str,
+    is_directory: bool,
+    indexed_components: &mut usize,
+) -> Result<(), String> {
+    let logical = name.trim_end_matches('/');
+    let mut components = logical.split('/').peekable();
+    let mut node = root;
+    let mut components_in_entry = 0;
+
+    while let Some(component) = components.next() {
+        components_in_entry += 1;
+        if components_in_entry > MAX_ARCHIVE_PATH_COMPONENTS_PER_ENTRY {
+            return Err("IPA archive entry has too many path components".into());
+        }
+        *indexed_components = (*indexed_components)
+            .checked_add(1)
+            .ok_or("IPA archive has too many path components")?;
+        if *indexed_components > MAX_ARCHIVE_PATH_COMPONENTS {
+            return Err("IPA archive has too many path components".into());
+        }
+
+        let is_final = components.peek().is_none();
+        let folded = canonical_path_component(component);
+        let child = node
+            .children
+            .entry(folded)
+            .or_insert_with(|| ArchivePathNode {
+                spelling: component.to_owned(),
+                kind: ArchivePathKind::Directory,
+                explicit: false,
+                children: HashMap::new(),
+            });
+
+        if child.spelling != component {
+            return Err(ARCHIVE_PATH_COLLISION.into());
+        }
+
+        if is_final {
+            if child.explicit {
+                return Err(ARCHIVE_PATH_COLLISION.into());
+            }
+            if is_directory {
+                if child.kind == ArchivePathKind::File {
+                    return Err(ARCHIVE_PATH_COLLISION.into());
+                }
+                child.explicit = true;
+            } else {
+                if child.kind == ArchivePathKind::Directory && !child.children.is_empty() {
+                    return Err(ARCHIVE_PATH_COLLISION.into());
+                }
+                child.kind = ArchivePathKind::File;
+                child.explicit = true;
+            }
+        } else if child.kind == ArchivePathKind::File {
+            return Err(ARCHIVE_PATH_COLLISION.into());
+        }
+
+        node = child;
+    }
+
+    Ok(())
+}
 
 fn verified_archive(
     path: &Path,
@@ -44,7 +143,8 @@ fn verified_archive(
     if archive.len() > 100_000 {
         return Err("Too many IPA archive entries".into());
     }
-    let mut seen = HashSet::new();
+    let mut paths = ArchivePathNode::root();
+    let mut indexed_path_components = 0;
     let mut total = 0u64;
     let mut app_bundle_size = 0u64;
     let mut manifest_index = None;
@@ -89,10 +189,12 @@ fn verified_archive(
         if !allowed {
             return Err("IPA contains an unapproved archive member".into());
         }
-        let logical = name.trim_end_matches('/');
-        if !seen.insert(logical.to_owned()) {
-            return Err("Duplicate IPA archive entry".into());
-        }
+        register_archive_path(
+            &mut paths,
+            &name,
+            member.is_dir(),
+            &mut indexed_path_components,
+        )?;
         total = total
             .checked_add(member.size())
             .ok_or("IPA decompressed size exceeds safety limit")?;
@@ -918,6 +1020,28 @@ mod tests {
     }
 
     #[test]
+    fn accepts_explicit_directories_and_their_children() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fixture.ipa");
+        let file = File::create(&path).unwrap();
+        let mut writer = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        writer.add_directory("Payload/", options).unwrap();
+        writer
+            .add_directory("Payload/YouTube.app/", options)
+            .unwrap();
+        writer
+            .start_file("Payload/YouTube.app/Info.plist", options)
+            .unwrap();
+        writer.write_all(PLIST.as_bytes()).unwrap();
+        writer.finish().unwrap();
+        let contents = std::fs::read(&path).unwrap();
+        let sha = format!("{:x}", Sha256::digest(&contents));
+
+        assert_eq!(verify(&path, &sha).unwrap(), "19.25.4");
+    }
+
+    #[test]
     fn rejects_invalid_app_version() {
         let manifest = PLIST.replace("19.25.4", "$(bad)");
         let (temp, sha) = fixture_with_manifest(&manifest, &[]);
@@ -941,6 +1065,76 @@ mod tests {
                 "accepted {name}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_filesystem_equivalent_archive_paths() {
+        let cases: &[(&str, &[(&str, &[u8])])] = &[
+            (
+                "Info.plist case alias",
+                &[("Payload/YouTube.app/info.plist", b"alternate plist")],
+            ),
+            (
+                "directory case alias",
+                &[
+                    ("Payload/YouTube.app/Assets/first.bin", b"first"),
+                    ("Payload/YouTube.app/assets/second.bin", b"second"),
+                ],
+            ),
+            (
+                "canonical Unicode normalization alias",
+                &[
+                    ("Payload/YouTube.app/caf\u{e9}.bin", b"composed"),
+                    ("Payload/YouTube.app/cafe\u{301}.bin", b"decomposed"),
+                ],
+            ),
+            (
+                "full Unicode case-fold alias",
+                &[
+                    ("Payload/YouTube.app/stra\u{df}e.bin", b"sharp s"),
+                    ("Payload/YouTube.app/STRASSE.bin", b"expanded fold"),
+                ],
+            ),
+            (
+                "file used as a directory",
+                &[
+                    ("Payload/YouTube.app/Cache", b"file"),
+                    ("Payload/YouTube.app/Cache/child", b"child"),
+                ],
+            ),
+            (
+                "case-folded file and directory alias",
+                &[
+                    ("Payload/YouTube.app/Assets.car", b"file"),
+                    ("Payload/YouTube.app/assets.car/child", b"child"),
+                ],
+            ),
+        ];
+
+        for (description, extra) in cases {
+            let (temp, sha) = fixture(extra);
+            let error = verify(&temp.path().join("fixture.ipa"), &sha).unwrap_err();
+            assert!(
+                error.contains("collision"),
+                "{description} was not rejected as a path collision: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn bounds_archive_path_index_depth_and_size() {
+        let mut root = ArchivePathNode::root();
+        let mut indexed_components = 0;
+        let deep_path = vec!["x"; MAX_ARCHIVE_PATH_COMPONENTS_PER_ENTRY + 1].join("/");
+        let error = register_archive_path(&mut root, &deep_path, false, &mut indexed_components)
+            .unwrap_err();
+        assert!(error.contains("too many path components"), "{error}");
+
+        let mut root = ArchivePathNode::root();
+        let mut indexed_components = MAX_ARCHIVE_PATH_COMPONENTS;
+        let error =
+            register_archive_path(&mut root, "Payload", true, &mut indexed_components).unwrap_err();
+        assert!(error.contains("too many path components"), "{error}");
     }
 
     #[test]

@@ -84,6 +84,11 @@ fn stages_and_promotes_only_the_validated_app_bundle() {
         INFO_PLIST
     );
     assert_eq!(
+        fs::read(payload.join("YouTube.app/Info.plist")).unwrap(),
+        INFO_PLIST,
+        "the promoted manifest must be the one verified before extraction"
+    );
+    assert_eq!(
         fs::read(payload.join("YouTube.app/Frameworks/helper")).unwrap(),
         b"synthetic executable"
     );
@@ -104,6 +109,78 @@ fn stages_and_promotes_only_the_validated_app_bundle() {
             .mode();
         assert_eq!(mode & 0o111, 0o111, "app executable mode was lost");
     }
+}
+
+#[test]
+fn rejects_a_casefolded_manifest_alias_before_creating_outputs() {
+    let (temp, checkout, staging, payload) = checkout_fixture();
+    let ipa = temp.path().join("colliding-manifest.ipa");
+    let mut entries = valid_entries();
+    entries.push((
+        "Payload/YouTube.app/info.plist",
+        b"untrusted alternate plist",
+        None,
+    ));
+    let digest = make_ipa(&ipa, &entries);
+
+    let output = run_prepare(&ipa, &digest, &staging, &payload);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("collision"),
+        "unexpected rejection: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !staging.exists(),
+        "rejected archives must not create staging output"
+    );
+    assert!(
+        !payload.exists(),
+        "rejected archives must not change the build input"
+    );
+    assert_eq!(
+        fs::read(checkout.join("main/Makefile")).unwrap(),
+        b"trusted build source"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn reports_macos_runner_case_and_unicode_path_alias_behavior() {
+    use std::fs::OpenOptions;
+    use std::io::ErrorKind;
+
+    fn aliases(first: &Path, second: &Path) -> bool {
+        drop(
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(first)
+                .unwrap(),
+        );
+        match OpenOptions::new().write(true).create_new(true).open(second) {
+            Ok(file) => {
+                drop(file);
+                fs::remove_file(second).unwrap();
+                false
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => true,
+            Err(error) => panic!("unable to probe isolated macOS fixture: {error}"),
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let case_alias = aliases(
+        &temp.path().join("CaseProbe"),
+        &temp.path().join("caseprobe"),
+    );
+    let normalization_alias = aliases(
+        &temp.path().join("caf\u{e9}-probe"),
+        &temp.path().join("cafe\u{301}-probe"),
+    );
+    println!(
+        "macOS runner filesystem aliases: case-insensitive={case_alias}, canonical-unicode-equivalent={normalization_alias}"
+    );
 }
 
 #[test]

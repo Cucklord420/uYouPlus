@@ -7,11 +7,13 @@
 - Move ZIP extraction and checkout promotion from shell utilities into the Rust IPA command.
 - Move the HTTPS download into the Rust IPA command so it can enforce byte limits while streaming.
 - Keep the new archive, extraction, and workflow regressions in Rust.
+- Reject path components that compare equal under Unicode canonical caseless matching, checking implicit directories and file/directory conflicts before output creation.
+- Verify path-collision rejection and report actual case/normalization alias behavior on the macOS-15 runner using harmless temporary fixtures.
 - Preserve HTTPS-only redirects, the 600-second request timeout, two retries, and staging cleanup.
 
 **Non-goals.**
 - The supplied URL and digest do not establish independent publisher authenticity.
-- Do not merge Debian authentication or the separate ZIP case-fold/Unicode collision finding #58 into this change.
+- Debian package authentication remains a separate change.
 - Do not claim an authorized macOS/Theos build, signing, installation, or device test without performing it.
 
 **Approaches.**
@@ -21,9 +23,12 @@
 
 **Approved resource policy.** The user selected a stricter 4 GiB hard download cap and a 4 GiB free-space reserve. Each attempt is limited to the smaller of the hard cap and the free space available above the reserve. Rust counts bytes as they arrive and ignores `Content-Length`; it never writes the byte that would exceed the limit. The URL uses the existing strict shared validation policy, is sent to `curl` through stdin rather than process arguments, and ambient `curl` configuration is disabled. HTTPS-only protocol and redirect rules, a 600-second per-attempt timeout, and two retries are retained. Rust removes each failed partial file before retrying or returning an error. Before creating extraction or payload output, it checks current free space for the declared app-bundle expansion and its promoted copy, plus the same 4 GiB reserve. The already-downloaded IPA is reflected in current free space. On a shared filesystem the check covers both copies together; on separate filesystems it checks each destination volume for its own copy and reserve. The existing 8 GiB ZIP expansion ceiling remains in force.
 
+**Archive path semantics.** An IPA is rejected if any path component conflicts under canonical caseless matching: NFD, full default Unicode case folding using the Unicode 16.0.0 tables bundled by `caseless` 0.2.2, then NFD using `unicode-normalization` 0.1.26. This applies to every component prefix, including implicit directories, and rejects duplicates plus file/directory conflicts before staging is created. Matching is deliberately conservative across the extraction volume's case and normalization settings. The prefix index is capped at 128 components per entry and 1,000,000 components per archive to bound memory use.
+
 **Constraints and acceptance.**
 - Keep the work on the existing PR #14 branch and leave the PR Draft while authorized macOS compatibility and independent review remain outstanding.
 - Reject invalid checksums, unsafe or duplicate paths, links, FIFOs and other special files, unexpected roots, and unsafe/pre-existing destinations without changing checkout content.
 - Accept the two reviewed root metadata files but do not copy them into the checkout.
 - Copy the app's file permission bits so executable bundle files retain their build behavior.
+- Verify that the promoted `Payload/YouTube.app/Info.plist` is byte-identical to the validated manifest and that the workflow passes this exact directory to `make`.
 - Run Rust formatting, strict Clippy, Rust regressions, workflow validation, and exact-head CI. Record any missing platform/device evidence honestly.

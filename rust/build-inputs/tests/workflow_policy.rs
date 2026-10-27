@@ -61,6 +61,22 @@ fn ipa_is_validated_and_prepared_by_rust_in_runner_temp() {
 }
 
 #[test]
+fn make_uses_the_bundle_promoted_after_manifest_verification() {
+    let preparation = BUILD_WORKFLOW
+        .find("--payload-destination main/Payload")
+        .unwrap();
+    let make = BUILD_WORKFLOW
+        .find("make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app")
+        .unwrap();
+    let version_update = BUILD_WORKFLOW
+        .find("YOUTUBE_VERSION = $youtube_version")
+        .unwrap();
+
+    assert!(preparation < version_update);
+    assert!(version_update < make);
+}
+
+#[test]
 fn rust_downloader_retains_the_approved_limits_and_retries() {
     assert!(IPA_SOURCE.contains("const MAX_IPA_DOWNLOAD_BYTES: u64 = 4 * BYTES_PER_GIB"));
     assert!(IPA_SOURCE.contains("const DISK_RESERVE_BYTES: u64 = 4 * BYTES_PER_GIB"));

@@ -20,7 +20,7 @@ jobs:
           persist-credentials: false
 
       - name: Run Rust input, IPA, and workflow security regressions
-        run: cargo test --manifest-path rust/build-inputs/Cargo.toml
+        run: cargo test --manifest-path rust/build-inputs/Cargo.toml --locked
       - name: Check Rust formatting
         run: cargo fmt --manifest-path rust/build-inputs/Cargo.toml -- --check
       - name: Check Rust Clippy warnings
@@ -39,3 +39,14 @@ jobs:
           test -d Sources
           git config -f .gitmodules --get-regexp '^submodule\..*\.url$' > /dev/null
           echo 'Source layout, shell syntax, and submodule manifest validated.'
+
+  macos-path-semantics:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Run Rust regressions and record macOS filesystem alias behavior
+        run: cargo test --manifest-path rust/build-inputs/Cargo.toml --locked -- --nocapture

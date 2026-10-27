@@ -19,7 +19,9 @@
 - Before extraction, require space for the staged app and promoted copy plus the 4 GiB reserve, accounting for whether both destinations share a filesystem.
 - Retain HTTPS-only redirects, 600-second per-attempt timeout, and two retries.
 - Reuse the existing strict URL validator, provide the URL through a private curl config pipe, and disable ambient curl configuration.
-- Keep operator-supplied digest provenance limits and separate issue #58 scope explicit.
+- Keep operator-supplied digest provenance limits explicit; incorporate RustyNuts #58 path-collision checks into this existing PR without opening another PR.
+- Reject component aliases using canonical caseless matching (NFD, full default case folding from caseless 0.2.2's Unicode 16.0.0 table, NFD), including implicit directories and file/directory conflicts; cap the index at 128 components per entry and 1,000,000 per archive.
+- Verify the actual macOS-15 runner's case and normalization behavior with harmless temp files and keep the checked plist tied to the bundle passed to `make`.
 - Do not claim macOS/Theos, signing, installation, or device validation without authorized evidence.
 
 ## Review Focus
@@ -35,7 +37,9 @@
 
 **Files:**
 - Modify: `rust/build-inputs/src/bin/ipa.rs`
+- Modify: `rust/build-inputs/Cargo.toml` and `rust/build-inputs/Cargo.lock`
 - Create: `rust/build-inputs/tests/ipa_prepare.rs`
+- Modify: `.github/workflows/validate.yml` for macOS-15 filesystem verification
 
 **Interfaces:**
 - Add `prepare(path: &Path, expected: &str, staging_root: &Path, payload_destination: &Path) -> Result<String, String>`.
@@ -84,13 +88,28 @@
 - Return app-bundle expansion size from full archive verification and check the current destination-volume space before creating either output.
 
 - [x] Add Rust tests for exact-cap success, over-cap rejection without writing the overflow byte, dynamic-cap/reserve boundaries, partial-file cleanup, retries, HTTPS policy, and shared/separate-volume extraction preflight.
+
 - [ ] Run those focused tests and confirm the new transfer and preflight expectations fail before implementation. Local execution currently stops before compilation because this Windows machine lacks `link.exe`; use exact-head CI for execution.
 - [x] Implement the Rust streamed transfer with HTTPS-only protocols and redirects, a 600-second timeout, two retries, fresh partial files, and generic URL-safe errors.
 - [x] Implement fail-closed free-space queries on macOS and Linux and preflight both output volumes before extraction.
 - [x] Replace workflow `curl --output` with the Rust download subcommand and update Rust workflow-policy coverage.
 - [ ] Run focused and full Rust suites, formatting, strict Clippy, shell/action validation, and exact-head CI.
 
-### Task 4: Review and exact-head verification
+### Task 4: ZIP case-fold and normalization collision checks
+
+**Files:**
+- Modify: `rust/build-inputs/src/bin/ipa.rs`
+- Modify: `rust/build-inputs/tests/ipa_prepare.rs`
+- Modify: `rust/build-inputs/tests/workflow_policy.rs`
+- Modify: `.github/workflows/validate.yml`
+- Modify: `README.md`
+
+- [ ] Add Rust regressions for ASCII case aliases, full Unicode folding, canonical Unicode equivalents, aliased directories, and file/directory conflicts.
+- [ ] Preserve valid explicit directory entries and reject unsafe path-index depth/size before output creation.
+- [ ] Ensure rejected aliases fail before staging or changing the build input; verify the promoted plist matches the one whose version is reported.
+- [ ] Run the Rust suite on macOS-15 and record the runner volume's case and normalization behavior; verify workflow handoff uses the promoted bundle.
+
+### Task 5: Review and exact-head verification
 
 **Files:**
 - Modify: `README.md` only if the existing build-isolation explanation needs correction.
