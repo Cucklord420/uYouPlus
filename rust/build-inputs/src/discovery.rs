@@ -2,7 +2,6 @@
 // Find one root-level IPA file or app bundle without following symlinks.
 
 use std::{
-    ffi::OsStr,
     fs,
     io::{self, Write},
     os::unix::ffi::OsStrExt,
@@ -18,9 +17,10 @@ fn find_root_input(root: &Path) -> Result<PathBuf, String> {
         let entry =
             entry.map_err(|error| format!("Cannot inspect a root directory entry: {error}"))?;
         let path = entry.path();
-        let extension = path.extension();
-        let is_ipa = extension == Some(OsStr::new("ipa"));
-        let is_app = extension == Some(OsStr::new("app"));
+        let file_name = entry.file_name();
+        let file_name_bytes = file_name.as_bytes();
+        let is_ipa = file_name_bytes.ends_with(b".ipa");
+        let is_app = file_name_bytes.ends_with(b".app");
 
         if !is_ipa && !is_app {
             continue;
