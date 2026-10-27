@@ -17,8 +17,8 @@ fn run(root: &Path) -> Output {
 
 #[test]
 fn build_script_delegates_discovery_to_rust() {
-    let script = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build.sh"))
-        .unwrap();
+    let script =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build.sh")).unwrap();
 
     for required_fragment in [
         "UYOUPLUS_INPUTS_BIN",
@@ -49,7 +49,10 @@ fn build_script_delegates_discovery_to_rust() {
 fn assert_rejected_without_path(root: &Path) {
     let output = run(root);
     assert!(!output.status.success(), "invalid candidates must fail");
-    assert!(output.stdout.is_empty(), "errors must not emit a candidate path");
+    assert!(
+        output.stdout.is_empty(),
+        "errors must not emit a candidate path"
+    );
     assert!(
         !output.stderr.is_empty(),
         "errors should explain why discovery failed"
@@ -134,7 +137,11 @@ fn ignores_symlinked_ipa_candidates() {
 
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("actual-file"), b"synthetic").unwrap();
-    symlink(temp.path().join("actual-file"), temp.path().join("linked.ipa")).unwrap();
+    symlink(
+        temp.path().join("actual-file"),
+        temp.path().join("linked.ipa"),
+    )
+    .unwrap();
     assert_rejected_without_path(temp.path());
 }
 
@@ -144,7 +151,11 @@ fn ignores_symlinked_app_candidates() {
 
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir(temp.path().join("actual-bundle")).unwrap();
-    symlink(temp.path().join("actual-bundle"), temp.path().join("linked.app")).unwrap();
+    symlink(
+        temp.path().join("actual-bundle"),
+        temp.path().join("linked.app"),
+    )
+    .unwrap();
     assert_rejected_without_path(temp.path());
 }
 

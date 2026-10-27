@@ -15,9 +15,8 @@ fn find_root_input(root: &Path) -> Result<PathBuf, String> {
     let mut selected = None;
 
     for entry in entries {
-        let entry = entry.map_err(|error| {
-            format!("Cannot inspect a root directory entry: {error}")
-        })?;
+        let entry =
+            entry.map_err(|error| format!("Cannot inspect a root directory entry: {error}"))?;
         let path = entry.path();
         let extension = path.extension();
         let is_ipa = extension == Some(OsStr::new("ipa"));
@@ -28,7 +27,10 @@ fn find_root_input(root: &Path) -> Result<PathBuf, String> {
         }
 
         let file_type = entry.file_type().map_err(|error| {
-            format!("Cannot inspect candidate type for {}: {error}", path.display())
+            format!(
+                "Cannot inspect candidate type for {}: {error}",
+                path.display()
+            )
         })?;
         let is_valid = (is_ipa && file_type.is_file()) || (is_app && file_type.is_dir());
         if !is_valid {
