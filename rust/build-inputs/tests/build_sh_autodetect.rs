@@ -75,26 +75,55 @@ fn main() {
     }
 
     fn run(&self) -> std::process::Output {
+        self.run_with_input(b"\n", Some(env!("CARGO_BIN_EXE_uyouplus-inputs")))
+    }
+
+    fn run_with_input(&self, input: &[u8], helper_bin: Option<&str>) -> std::process::Output {
         let mut path_entries = vec![self.bin.clone()];
         path_entries.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
         let path = env::join_paths(path_entries).unwrap();
 
-        let mut child = Command::new("/bin/bash")
+        let mut command = Command::new("/bin/bash");
+        command
             .arg(&self.script)
             .current_dir(&self.root)
             .env("PATH", path)
             .env("MAKE_LOG", &self.make_log)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(helper_bin) = helper_bin {
+            command.env("UYOUPLUS_INPUTS_BIN", helper_bin);
+        }
+        let mut child = command
             .spawn()
             .expect("/bin/bash is required for build.sh integration tests");
-        child.stdin.take().unwrap().write_all(b"\n").unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
         child.wait_with_output().unwrap()
     }
 
     fn invoked_ipa(&self) -> Option<Vec<u8>> {
         fs::read(&self.make_log).ok()
+    }
+}
+
+#[test]
+fn build_script_delegates_discovery_to_rust() {
+    let script = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build.sh"),
+    )
+    .unwrap();
+
+    assert!(script.contains("discover-root-input"));
+    for bash_discovery in [
+        "find . -maxdepth 1",
+        "CANDIDATES=()",
+        "while IFS= read -r -d '' CANDIDATE",
+    ] {
+        assert!(
+            !script.contains(bash_discovery),
+            "candidate enumeration must remain in Rust: {bash_discovery}"
+        );
     }
 }
 
@@ -197,4 +226,32 @@ fn ignores_ipa_directories_and_app_regular_files() {
         fixture.invoked_ipa().is_none(),
         "make must not run when no valid candidate exists"
     );
+}
+
+#[test]
+fn explicit_operator_path_does_not_require_the_discovery_helper() {
+    let fixture = Fixture::new();
+    let output = fixture.run_with_input(
+        b"/operator/path with spaces/YouTube.ipa\n",
+        Some("/missing/uyouplus-inputs-helper"),
+    );
+
+    assert_eq!(
+        fixture.invoked_ipa().as_deref(),
+        Some(&b"/operator/path with spaces/YouTube.ipa"[..])
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(7),
+        "the existing make stub should receive the explicit path"
+    );
+}
+
+#[test]
+fn helper_startup_failure_stops_before_make() {
+    let fixture = Fixture::new();
+    let output = fixture.run_with_input(b"\n", Some("/missing/uyouplus-inputs-helper"));
+
+    assert!(!output.status.success());
+    assert!(fixture.invoked_ipa().is_none());
 }
