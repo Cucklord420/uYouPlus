@@ -202,13 +202,13 @@ mod output_artifact_tests {
             b"synthetic archive bytes\n"
         );
         let expected = format!("{:x}", Sha256::digest(b"synthetic archive bytes\n"));
-        let fresh_name = fresh.file_name().to_string_lossy();
+        let fresh_name = fresh.file_name().to_string_lossy().into_owned();
         assert!(
             stdout.contains(&expected),
             "missing fresh artifact digest: {stdout:?}"
         );
         assert!(
-            stdout.contains(fresh_name.as_ref()),
+            stdout.contains(&fresh_name),
             "reported path must identify the new IPA: {stdout:?}"
         );
     }
