@@ -11,6 +11,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
+
 const BUILD_PROMPT: &str = "\x1b[34m==> \x1b[1;39mPath to the decrypted YouTube.ipa or YouTube.app. If nothing is provided, any ipa/app in the project's root directory will be used: ";
 
 struct StagingDirectory(PathBuf);
@@ -78,7 +81,7 @@ pub fn run() -> Result<i32, String> {
     let input_path = if input.is_empty() {
         #[cfg(unix)]
         {
-            match crate::discovery::discover_current_directory_root_input() {
+            match discover_root_input() {
                 Ok(path) => path,
                 Err(_) => {
                     println!("❌ Error: Could not discover one root-level IPA/app candidate.");
@@ -134,6 +137,27 @@ pub fn run() -> Result<i32, String> {
             println!("Build output rejected: {error}");
             Ok(1)
         }
+    }
+}
+
+#[cfg(unix)]
+fn discover_root_input() -> Result<PathBuf, String> {
+    if let Some(helper) = std::env::var_os("UYOUPLUS_INPUTS_BIN") {
+        let output = Command::new(helper)
+            .arg("discover-root-input")
+            .output()
+            .map_err(|error| format!("cannot start root input discovery helper: {error}"))?;
+        if !output.status.success() {
+            return Err("root input discovery helper failed".to_owned());
+        }
+
+        let mut path = output.stdout;
+        if path.pop() != Some(0) || path.contains(&0) {
+            return Err("root input discovery helper returned an invalid path".to_owned());
+        }
+        Ok(PathBuf::from(OsString::from_vec(path)))
+    } else {
+        crate::discovery::discover_current_directory_root_input()
     }
 }
 

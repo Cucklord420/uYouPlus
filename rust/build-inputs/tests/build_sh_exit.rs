@@ -1,6 +1,6 @@
 // Regression: the inherited local Theos launcher must report a failed build to its caller.
 // This uses a disposable cwd and an inert failing executable; no IPA is downloaded,
-// produced, extracted, signed, or installed.
+// signed, or installed.
 
 #[cfg(unix)]
 #[test]
@@ -28,6 +28,7 @@ fn local_build_failure_returns_nonzero_status() {
         .arg(launcher)
         .current_dir(root.path())
         .env("PATH", path)
+        .env("UYOUPLUS_BUILD_BIN", env!("CARGO_BIN_EXE_uyouplus-inputs"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -73,8 +74,8 @@ mod output_artifact_tests {
         fs::set_permissions(&path, permissions).unwrap();
     }
 
-    // Real checked-in build.sh and real system shasum (except in negative hash
-    // tests). Only make and the cosmetic open command are replaced.
+    // Real checked-in build.sh and Rust CLI. The shasum stub proves that the
+    // reported digest does not depend on an external hash executable.
     fn run(
         make_body: &str,
         existing: &[(&str, &[u8])],
@@ -89,7 +90,6 @@ mod output_artifact_tests {
             fs::write(full, bytes).unwrap();
         }
         stub(&bin, "make", make_body);
-        stub(&bin, "open", "exit 1");
         if let Some(body) = hash_override {
             stub(&bin, "shasum", body);
         }
@@ -105,6 +105,7 @@ mod output_artifact_tests {
             .arg(launcher)
             .current_dir(temp.path())
             .env("PATH", path)
+            .env("UYOUPLUS_BUILD_BIN", env!("CARGO_BIN_EXE_uyouplus-inputs"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

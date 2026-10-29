@@ -16,32 +16,25 @@ fn run(root: &Path) -> Output {
 }
 
 #[test]
-fn build_script_delegates_discovery_to_rust() {
+fn build_script_delegates_the_local_build_to_rust() {
     let script =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build.sh")).unwrap();
 
     for required_fragment in [
-        "UYOUPLUS_INPUTS_BIN",
-        "discover-root-input",
-        "read -r -d '' PATHTOYT",
+        "local-build",
         "cargo run --quiet",
-        "--manifest-path rust/build-inputs/Cargo.toml",
+        "rust/build-inputs/Cargo.toml",
         "--bin uyouplus-inputs",
     ] {
         assert!(
             script.contains(required_fragment),
-            "build.sh must use Rust root discovery: {required_fragment}"
+            "build.sh must delegate the manual build to Rust: {required_fragment}"
         );
     }
-    for bash_discovery in [
-        "find . -maxdepth 1",
-        "CANDIDATES=()",
-        "while IFS= read -r -d '' CANDIDATE",
-        "for CANDIDATE in",
-    ] {
+    for shell_build_logic in ["make package", "shasum -a 256", "THEOS_PACKAGE_DIR="] {
         assert!(
-            !script.contains(bash_discovery),
-            "candidate enumeration must remain in Rust: {bash_discovery}"
+            !script.contains(shell_build_logic),
+            "manual build and artifact handling must remain in Rust: {shell_build_logic}"
         );
     }
 }

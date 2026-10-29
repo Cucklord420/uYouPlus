@@ -89,6 +89,7 @@ fn main() {
             .current_dir(&self.root)
             .env("PATH", path)
             .env("MAKE_LOG", &self.make_log)
+            .env("UYOUPLUS_BUILD_BIN", env!("CARGO_BIN_EXE_uyouplus-inputs"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
