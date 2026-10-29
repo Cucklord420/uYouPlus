@@ -20,14 +20,45 @@ if [ -z "$PATHTOYT" ]; then
     fi
 fi
 
+# Mark the start of this build, so an old package cannot be mistaken for output.
+build_marker=$(mktemp ./.uyou-build-start.XXXXXXXX) || {
+  echo "Build output rejected: cannot create build-start marker"
+  exit 1
+}
+trap 'rm -f -- "$build_marker"' EXIT
+
 make package THEOS_PACKAGE_SCHEME=rootless IPA="$PATHTOYT" FINALPACKAGE=1
+build_status=$?
 
-# SHASUM
-if [[ $? -eq 0 ]]; then
-  open packages
-  echo "SHASUM256: $(shasum -a 256 packages/*.ipa)"
-
-else
+if [[ $build_status -ne 0 ]]; then
   echo "Failed building uYouPlus"
-
+  exit "$build_status"
 fi
+
+# A successful make alone does not prove it produced a release artifact.
+shopt -s nullglob
+artifacts=(packages/*.ipa)
+shopt -u nullglob
+if [[ ${#artifacts[@]} -ne 1 ]]; then
+  echo "Build output rejected: expected exactly one IPA artifact"
+  exit 1
+fi
+
+ipa="${artifacts[0]}"
+if [[ ! -f "$ipa" || -L "$ipa" || ! -s "$ipa" || ! "$ipa" -nt "$build_marker" ]]; then
+  echo "Build output rejected: IPA must be a new nonempty regular file"
+  exit 1
+fi
+
+if ! checksum=$(shasum -a 256 "$ipa"); then
+  echo "Build output rejected: SHA-256 calculation failed"
+  exit 1
+fi
+if [[ ! "$checksum" =~ ^[[:xdigit:]]{64}[[:space:]][[:space:]] ]] || [[ "${checksum:66}" != "$ipa" ]]; then
+  echo "Build output rejected: invalid SHA-256 output"
+  exit 1
+fi
+
+printf 'SHA256: %s\n' "$checksum"
+# Opening the output folder is a UI convenience, not a release-integrity gate.
+open packages >/dev/null 2>&1 || true
