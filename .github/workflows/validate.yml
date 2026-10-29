@@ -50,3 +50,18 @@ jobs:
           persist-credentials: false
       - name: Run Rust regressions and record macOS filesystem alias behavior
         run: cargo test --manifest-path rust/build-inputs/Cargo.toml --locked -- --nocapture
+
+  macos-app-discovery:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check macOS system Bash and find
+        run: |
+          /bin/bash --version | head -n 1
+          /usr/bin/find . -maxdepth 1 -print0 > /dev/null
+      - name: Run synthetic app discovery cases on system Bash
+        run: cargo test --manifest-path rust/build-inputs/Cargo.toml --locked --test build_sh_autodetect

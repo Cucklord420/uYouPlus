@@ -4,6 +4,9 @@
 use regex::Regex;
 use uyouplus_inputs::validate_ipa_url;
 
+#[cfg(unix)]
+mod discovery;
+
 fn valid(pattern: &str, value: &str) -> bool {
     Regex::new(pattern).expect("static regex").is_match(value)
 }
@@ -35,16 +38,40 @@ fn validate(
 }
 
 fn main() {
+    let mut args = std::env::args().skip(1);
+    let command = args.next();
+
+    if command.as_deref() == Some("discover-root-input") {
+        if args.next().is_some() {
+            eprintln!("discover-root-input does not accept arguments");
+            std::process::exit(2);
+        }
+
+        #[cfg(unix)]
+        if let Err(error) = discovery::write_root_input() {
+            eprintln!("Root input discovery failed: {error}");
+            std::process::exit(1);
+        }
+
+        #[cfg(not(unix))]
+        {
+            eprintln!("Root input discovery is supported only on Unix build hosts");
+            std::process::exit(1);
+        }
+
+        return;
+    }
+
+    if command.as_deref() != Some("inputs") {
+        eprintln!("Usage: uyouplus-inputs discover-root-input | uyouplus-inputs inputs --url URL --sha256 DIGEST --version VERSION --bundle ID --app NAME");
+        std::process::exit(2);
+    }
+
     let mut url = None;
     let mut sha = None;
     let mut version = None;
     let mut bundle = None;
     let mut app = None;
-    let mut args = std::env::args().skip(1);
-    if args.next().as_deref() != Some("inputs") {
-        eprintln!("Usage: uyouplus-inputs inputs --url URL --sha256 DIGEST --version VERSION --bundle ID --app NAME");
-        std::process::exit(2);
-    }
     while let Some(key) = args.next() {
         let Some(value) = args.next() else {
             eprintln!("Missing value for build argument");
