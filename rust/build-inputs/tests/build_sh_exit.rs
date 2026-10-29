@@ -114,7 +114,7 @@ mod output_artifact_tests {
             .stdin
             .take()
             .unwrap()
-            .write_all(b"synthetic-input.ipa\n")
+            .write_all(b"synthetic input.ipa\n")
             .unwrap();
         let output = child.wait_with_output().unwrap();
         (
@@ -140,6 +140,16 @@ mod output_artifact_tests {
     #[test]
     fn make_success_with_no_ipa_is_not_successful_build() {
         rejects("exit 0", &[], None);
+    }
+
+    #[test]
+    fn input_path_with_spaces_remains_one_make_argument() {
+        let body = "test \"$3\" = 'IPA=synthetic input.ipa' || exit 42\nmkdir -p \"$THEOS_PACKAGE_DIR\"\nprintf 'synthetic archive bytes\\n' > \"$THEOS_PACKAGE_DIR/out.ipa\"";
+        let (_temp, success, stdout, stderr) = run(body, &[], None);
+        assert!(
+            success,
+            "make did not receive the spaced input as one argument: stdout={stdout:?} stderr={stderr:?}"
+        );
     }
 
     #[test]
@@ -223,16 +233,36 @@ mod output_artifact_tests {
     }
 
     #[test]
-    fn hash_command_failure_cannot_report_success() {
-        rejects(PRODUCE_ONE, &[], Some("exit 13"));
+    fn failed_make_cleans_its_isolated_package_directory() {
+        let (temp, success, stdout, stderr) = run("exit 13", &[], None);
+        assert!(!success, "failed make unexpectedly succeeded");
+        assert!(
+            stdout.contains("Failed building uYouPlus"),
+            "missing build failure message: stdout={stdout:?} stderr={stderr:?}"
+        );
+        let packages = temp.path().join("packages");
+        assert_eq!(
+            fs::read_dir(packages).unwrap().count(),
+            0,
+            "failed builds must remove their private package staging directory"
+        );
     }
 
     #[test]
-    fn malformed_hash_output_cannot_report_success() {
-        rejects(
-            PRODUCE_ONE,
-            &[],
-            Some("printf 'invalid-digest  %s\\n' \"$2\""),
+    fn rust_digest_is_independent_of_external_hash_command() {
+        let (temp, success, stdout, stderr) = run(PRODUCE_ONE, &[], Some("exit 13"));
+        let expected = format!("{:x}", Sha256::digest(b"synthetic archive bytes\n"));
+        assert!(
+            success,
+            "the Rust digest must not depend on shasum: stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert!(
+            stdout.contains(&expected) && stdout.contains("packages/out.ipa"),
+            "must report the Rust-computed digest and artifact path: stdout={stdout:?}"
+        );
+        assert_eq!(
+            fs::read(temp.path().join("packages/out.ipa")).unwrap(),
+            b"synthetic archive bytes\n"
         );
     }
 

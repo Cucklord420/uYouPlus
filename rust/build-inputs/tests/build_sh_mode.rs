@@ -9,7 +9,6 @@ fn build_script_can_be_started_with_its_documented_direct_invocation() {
     let unrelated_directory = tempfile::tempdir().unwrap();
     let output = Command::new(launcher)
         .current_dir(unrelated_directory.path())
-        .env("UYOUPLUS_INPUTS_BIN", "/usr/bin/false")
         .stdin(Stdio::null())
         .output()
         .expect("directly execute the documented build.sh entry point");

@@ -6,6 +6,7 @@ use uyouplus_inputs::validate_ipa_url;
 
 #[cfg(unix)]
 mod discovery;
+mod local_build;
 
 fn valid(pattern: &str, value: &str) -> bool {
     Regex::new(pattern).expect("static regex").is_match(value)
@@ -62,8 +63,22 @@ fn main() {
         return;
     }
 
+    if command.as_deref() == Some("local-build") {
+        if args.next().is_some() {
+            eprintln!("local-build does not accept arguments");
+            std::process::exit(2);
+        }
+        match local_build::run() {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if command.as_deref() != Some("inputs") {
-        eprintln!("Usage: uyouplus-inputs discover-root-input | uyouplus-inputs inputs --url URL --sha256 DIGEST --version VERSION --bundle ID --app NAME");
+        eprintln!("Usage: uyouplus-inputs discover-root-input | uyouplus-inputs local-build | uyouplus-inputs inputs --url URL --sha256 DIGEST --version VERSION --bundle ID --app NAME");
         std::process::exit(2);
     }
 
