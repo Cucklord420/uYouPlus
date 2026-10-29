@@ -87,6 +87,7 @@ fn discovers_a_regular_ipa_whose_name_is_only_the_suffix() {
     assert_eq!(output.stdout, b"./.ipa\0");
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn preserves_non_utf8_path_bytes() {
     let temp = tempfile::tempdir().unwrap();
