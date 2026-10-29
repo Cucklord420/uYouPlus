@@ -372,6 +372,42 @@ fn ensure_downloads_only_verified_bytes_and_leaves_no_temporary_file() {
 }
 
 #[test]
+fn ensure_rejects_a_download_with_the_wrong_digest_and_leaves_no_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("fictional-source.deb");
+    fs::write(&source, SYNTHETIC_AR).unwrap();
+    let fake_bin = directory.path().join("fake-bin");
+    compile_fake_curl(&fake_bin);
+    let wrong_digest = digest(b"different fictional package bytes");
+
+    let output = tool()
+        .args(["ensure", "--build-dir"])
+        .arg(directory.path())
+        .args(["--version", VALID_VERSION, "--sha256", &wrong_digest])
+        .env("PATH", path_with(&fake_bin))
+        .env("SYNTHETIC_DEB", &source)
+        .output()
+        .expect("run uyou-deb ensure");
+
+    assert!(!output.status.success(), "accepted an unverified download");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("SHA-256 mismatch"),
+        "wrong-digest download failed for an unexpected reason: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!package_path(directory.path(), VALID_VERSION).exists());
+    assert_eq!(
+        fs::read_dir(directory.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".download."))
+            .count(),
+        0,
+        "temporary download file remained after digest rejection"
+    );
+}
+
+#[test]
 fn downloaded_synthetic_package_is_verified_promoted_and_extracted() {
     if !has_dpkg_deb() {
         eprintln!("skipping: dpkg-deb is not installed");
