@@ -62,10 +62,8 @@ mod output_artifact_tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::process::{Command, Stdio};
-    use std::time::Duration;
 
-    const PRODUCE_ONE: &str =
-        "mkdir -p packages\nprintf 'synthetic archive bytes\n' > packages/out.ipa\n";
+    const PRODUCE_ONE: &str = "mkdir -p \"$THEOS_PACKAGE_DIR\"\nprintf 'synthetic archive bytes\n' > \"$THEOS_PACKAGE_DIR/out.ipa\"\n";
 
     fn stub(bin: &Path, name: &str, body: &str) {
         let path = bin.join(name);
@@ -81,7 +79,7 @@ mod output_artifact_tests {
         make_body: &str,
         existing: &[(&str, &[u8])],
         hash_override: Option<&str>,
-    ) -> (bool, String, String) {
+    ) -> (tempfile::TempDir, bool, String, String) {
         let temp = tempfile::tempdir().unwrap();
         let bin = temp.path().join("bin");
         fs::create_dir(&bin).unwrap();
@@ -90,9 +88,6 @@ mod output_artifact_tests {
             fs::create_dir_all(full.parent().unwrap()).unwrap();
             fs::write(full, bytes).unwrap();
         }
-        // Files supplied above are deliberately older than the build start.
-        std::thread::sleep(Duration::from_millis(20));
-
         stub(&bin, "make", make_body);
         stub(&bin, "open", "exit 1");
         if let Some(body) = hash_override {
@@ -123,6 +118,7 @@ mod output_artifact_tests {
             .unwrap();
         let output = child.wait_with_output().unwrap();
         (
+            temp,
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
             String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -130,7 +126,7 @@ mod output_artifact_tests {
     }
 
     fn rejects(make_body: &str, existing: &[(&str, &[u8])], hash: Option<&str>) {
-        let (success, stdout, stderr) = run(make_body, existing, hash);
+        let (_temp, success, stdout, stderr) = run(make_body, existing, hash);
         assert!(
             !success,
             "false success: stdout={stdout:?} stderr={stderr:?}"
@@ -149,7 +145,7 @@ mod output_artifact_tests {
     #[test]
     fn make_success_with_two_ipas_is_not_successful_build() {
         rejects(
-            "mkdir -p packages\nprintf a > packages/a.ipa\nprintf b > packages/b.ipa",
+            "mkdir -p \"$THEOS_PACKAGE_DIR\"\nprintf a > \"$THEOS_PACKAGE_DIR/a.ipa\"\nprintf b > \"$THEOS_PACKAGE_DIR/b.ipa\"",
             &[],
             None,
         );
@@ -157,7 +153,11 @@ mod output_artifact_tests {
 
     #[test]
     fn make_success_with_empty_ipa_is_rejected() {
-        rejects("mkdir -p packages\n: > packages/out.ipa", &[], None);
+        rejects(
+            "mkdir -p \"$THEOS_PACKAGE_DIR\"\n: > \"$THEOS_PACKAGE_DIR/out.ipa\"",
+            &[],
+            None,
+        );
     }
 
     #[test]
@@ -166,18 +166,56 @@ mod output_artifact_tests {
     }
 
     #[test]
-    fn make_success_with_extra_stale_ipa_is_ambiguous() {
-        rejects(
-            PRODUCE_ONE,
-            &[("packages/stale.ipa", b"stale archive")],
-            None,
+    fn build_with_an_existing_same_name_ipa_preserves_old_output() {
+        let (temp, success, stdout, stderr) =
+            run(PRODUCE_ONE, &[("packages/out.ipa", b"stale archive")], None);
+        assert!(
+            success,
+            "fresh build failed: stdout={stdout:?} stderr={stderr:?}"
+        );
+        let packages = temp.path().join("packages");
+        assert_eq!(
+            fs::read(packages.join("out.ipa")).unwrap(),
+            b"stale archive"
+        );
+        let outputs: Vec<_> = fs::read_dir(&packages)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "ipa")
+            })
+            .collect();
+        assert_eq!(
+            outputs.len(),
+            2,
+            "fresh output must not overwrite the prior IPA"
+        );
+        let fresh = outputs
+            .iter()
+            .find(|entry| entry.file_name() != "out.ipa")
+            .expect("fresh output with a unique name");
+        assert_eq!(
+            fs::read(fresh.path()).unwrap(),
+            b"synthetic archive bytes\n"
+        );
+        let expected = format!("{:x}", Sha256::digest(b"synthetic archive bytes\n"));
+        assert!(
+            stdout.contains(&expected),
+            "missing fresh artifact digest: {stdout:?}"
+        );
+        assert!(
+            stdout.contains(&fresh.path().to_string_lossy()),
+            "reported path must identify the new IPA: {stdout:?}"
         );
     }
 
     #[test]
     fn make_success_cannot_accept_symlinked_ipa() {
         rejects(
-            "mkdir -p packages\nprintf data > source.bin\nln -s ../source.bin packages/out.ipa",
+            "mkdir -p \"$THEOS_PACKAGE_DIR\"\nprintf data > source.bin\nln -s \"$PWD/source.bin\" \"$THEOS_PACKAGE_DIR/out.ipa\"",
             &[],
             None,
         );
@@ -193,13 +231,13 @@ mod output_artifact_tests {
         rejects(
             PRODUCE_ONE,
             &[],
-            Some("printf 'invalid-digest  packages/out.ipa\\n'"),
+            Some("printf 'invalid-digest  %s\\n' \"$2\""),
         );
     }
 
     #[test]
     fn fresh_single_ipa_with_valid_digest_succeeds_even_if_open_fails() {
-        let (success, stdout, stderr) = run(PRODUCE_ONE, &[], None);
+        let (_temp, success, stdout, stderr) = run(PRODUCE_ONE, &[], None);
         let expected = format!("{:x}", Sha256::digest(b"synthetic archive bytes\n"));
         assert!(
             success,

@@ -1,24 +1,27 @@
-use std::path::PathBuf;
-use std::process::Command;
-
+#[cfg(unix)]
 #[test]
-fn build_script_is_stored_as_executable_for_direct_invocation() {
+fn build_script_can_be_started_with_its_documented_direct_invocation() {
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let output = Command::new("git")
-        .args(["ls-files", "--stage", "--", "build.sh"])
-        .current_dir(&repository)
+    let launcher = repository.join("build.sh");
+    let unrelated_directory = tempfile::tempdir().unwrap();
+    let output = Command::new(launcher)
+        .current_dir(unrelated_directory.path())
+        .env("UYOUPLUS_INPUTS_BIN", "/usr/bin/false")
+        .stdin(Stdio::null())
         .output()
-        .expect("git is available in the source checkout");
+        .expect("directly execute the documented build.sh entry point");
 
     assert!(
-        output.status.success(),
-        "could not inspect the tracked build.sh mode: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "empty discovery should stop before a build"
     );
-    let entry = String::from_utf8_lossy(&output.stdout);
-    let mode = entry.split_whitespace().next().unwrap_or("");
-    assert_eq!(
-        mode, "100755",
-        "build.sh documents direct invocation with ./build.sh"
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Could not discover one root-level"),
+        "the script should run and reject empty discovery: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
