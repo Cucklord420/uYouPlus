@@ -15,12 +15,13 @@ fn local_build_failure_returns_nonzero_status() {
 
     // /usr/bin/false is present on the GitHub-hosted macOS and Ubuntu runners.
     symlink("/usr/bin/false", bin.join("make")).expect("inert make replacement");
-    let launcher = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../build.sh");
+    let launcher = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build.sh");
     let path = format!(
         "{}:{}",
         bin.display(),
-        std::env::var_os("PATH").unwrap_or_default().to_string_lossy()
+        std::env::var_os("PATH")
+            .unwrap_or_default()
+            .to_string_lossy()
     );
 
     let mut process = Command::new("bash")
@@ -101,7 +102,9 @@ mod output_artifact_tests {
         let path = format!(
             "{}:{}",
             bin.display(),
-            std::env::var_os("PATH").unwrap_or_default().to_string_lossy()
+            std::env::var_os("PATH")
+                .unwrap_or_default()
+                .to_string_lossy()
         );
         let mut child = Command::new("bash")
             .arg(launcher)
@@ -128,7 +131,10 @@ mod output_artifact_tests {
 
     fn rejects(make_body: &str, existing: &[(&str, &[u8])], hash: Option<&str>) {
         let (success, stdout, stderr) = run(make_body, existing, hash);
-        assert!(!success, "false success: stdout={stdout:?} stderr={stderr:?}");
+        assert!(
+            !success,
+            "false success: stdout={stdout:?} stderr={stderr:?}"
+        );
         assert!(
             stdout.contains("Build output rejected"),
             "expected artifact-verification failure: stdout={stdout:?}, stderr={stderr:?}"
@@ -161,7 +167,11 @@ mod output_artifact_tests {
 
     #[test]
     fn make_success_with_extra_stale_ipa_is_ambiguous() {
-        rejects(PRODUCE_ONE, &[("packages/stale.ipa", b"stale archive")], None);
+        rejects(
+            PRODUCE_ONE,
+            &[("packages/stale.ipa", b"stale archive")],
+            None,
+        );
     }
 
     #[test]
