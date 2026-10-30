@@ -4,12 +4,17 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[[bin]]
+name = "uyou-deb"
+path = "src/bin/uyou_deb.rs"
+
 [dependencies]
 regex = "1"
 url = "2"
 sha2 = "0.10"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 plist = "1"
+httpdate = "1"
 
 [dev-dependencies]
 tempfile = "3"
