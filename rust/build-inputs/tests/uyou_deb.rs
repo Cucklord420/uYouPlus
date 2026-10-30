@@ -484,6 +484,15 @@ fn ensure_rejects_curl_older_than_header_capture_before_downloading() {
         "started a network download before checking curl capability"
     );
     assert!(!package_path(directory.path(), VALID_VERSION).exists());
+    assert_eq!(
+        fs::read_dir(directory.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".download."))
+            .count(),
+        0,
+        "unsupported curl left a temporary package file"
+    );
 }
 
 #[test]

@@ -16,6 +16,7 @@ const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_CURL_ERROR_PREFIX_BYTES: usize = 64 * 1024;
 const MAX_CURL_ERROR_TAIL_BYTES: usize = 128 * 1024;
 const MAX_DOWNLOAD_ATTEMPTS: usize = 3;
+const MIN_CURL_VERSION: (u64, u64, u64) = (7, 84, 0);
 const HTTP_STATUS_MARKER: &str = "__UYOU_HTTP_STATUS__";
 const RETRY_AFTER_MARKER: &str = "__UYOU_RETRY_AFTER__";
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(600);
@@ -234,6 +235,56 @@ fn capture_curl_stderr(mut reader: impl Read) -> io::Result<Vec<u8>> {
     Ok(captured)
 }
 
+fn parse_curl_version(output: &[u8]) -> Result<(u64, u64, u64)> {
+    let text = String::from_utf8_lossy(output);
+    let line = text.lines().next().unwrap_or_default().trim();
+    let version = line
+        .strip_prefix("curl ")
+        .and_then(|line| line.split_ascii_whitespace().next())
+        .ok_or_else(|| "cannot determine curl version".to_string())?;
+    let mut components = version.split('.');
+    let major = components
+        .next()
+        .and_then(|component| component.parse::<u64>().ok())
+        .ok_or_else(|| "cannot determine curl version".to_string())?;
+    let minor = components
+        .next()
+        .and_then(|component| component.parse::<u64>().ok())
+        .ok_or_else(|| "cannot determine curl version".to_string())?;
+    let patch = components
+        .next()
+        .and_then(|component| {
+            let digits = component
+                .chars()
+                .take_while(|character| character.is_ascii_digit())
+                .collect::<String>();
+            digits.parse::<u64>().ok()
+        })
+        .ok_or_else(|| "cannot determine curl version".to_string())?;
+    if components.next().is_some() {
+        return Err("cannot determine curl version".into());
+    }
+    Ok((major, minor, patch))
+}
+
+fn check_curl_version() -> Result<()> {
+    let output = Command::new("curl")
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("cannot inspect curl version: {error}"))?;
+    if !output.status.success() {
+        return Err("cannot inspect curl version".into());
+    }
+    let version = parse_curl_version(&output.stdout)?;
+    if version < MIN_CURL_VERSION {
+        return Err(format!(
+            "curl 7.84.0 or later is required to read Retry-After headers (found {}.{}.{})",
+            version.0, version.1, version.2
+        ));
+    }
+    Ok(())
+}
+
 impl CurlDownloader {
     fn download_attempt(
         url: &str,
@@ -338,6 +389,7 @@ impl CurlDownloader {
 
 impl Downloader for CurlDownloader {
     fn download(&self, url: &str, destination: &mut File) -> Result<()> {
+        check_curl_version()?;
         let mut last_error = "HTTPS package download failed".to_string();
         for attempt in 0..MAX_DOWNLOAD_ATTEMPTS {
             destination
@@ -739,6 +791,17 @@ mod tests {
         assert!(captured.len() <= MAX_CURL_ERROR_PREFIX_BYTES + 32 + MAX_CURL_ERROR_TAIL_BYTES);
         assert!(String::from_utf8_lossy(&captured)
             .ends_with("__UYOU_HTTP_STATUS__503\n__UYOU_RETRY_AFTER__2\n"));
+    }
+
+    #[test]
+    fn curl_version_parser_enforces_retry_after_header_support_minimum() {
+        assert!(parse_curl_version(b"curl 7.83.1 (synthetic)\n").unwrap() < MIN_CURL_VERSION);
+        assert_eq!(
+            parse_curl_version(b"curl 7.84.0 (synthetic)\n").unwrap(),
+            MIN_CURL_VERSION
+        );
+        assert!(parse_curl_version(b"curl 8.0.0-DEV (synthetic)\n").unwrap() > MIN_CURL_VERSION);
+        assert!(parse_curl_version(b"not curl output\n").is_err());
     }
 
     #[test]
