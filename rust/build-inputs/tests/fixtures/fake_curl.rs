@@ -16,7 +16,6 @@ fn main() {
         ("--connect-timeout", "30"),
         ("--max-time", "600"),
         ("--max-filesize", "536870912"),
-        ("--retry", "2"),
         ("--output", "-"),
     ];
     if !["--fail", "--location", "--silent", "--show-error"]
@@ -29,7 +28,7 @@ fn main() {
             .last()
             .is_some_and(|url| url.starts_with("https://repo.miro92.com/debs/com.miro.uyou_"))
     {
-        eprintln!("required HTTPS, timeout, size, retry, or release URL policy was not passed");
+        eprintln!("required HTTPS, timeout, size, or release URL policy was not passed");
         process::exit(97);
     }
 
@@ -49,6 +48,35 @@ fn main() {
         process::exit(22);
     }
     let source = env::var_os("SYNTHETIC_DEB").expect("synthetic source package path");
+
+    if env::var_os("SYNTHETIC_CURL_PARTIAL_RETRY").is_some() {
+        let marker = env::var_os("SYNTHETIC_CURL_ATTEMPT_MARKER")
+            .expect("synthetic curl attempt marker path");
+        if has_pair(&args, "--retry", "2") {
+            // Model curl's built-in retry with stdout: failed bytes remain in
+            // the pipe before the successful response is written.
+            io::stdout()
+                .write_all(b"!<arch>\npartial response")
+                .expect("write first simulated response");
+            let mut input = File::open(source).expect("open synthetic source package");
+            io::copy(&mut input, &mut io::stdout()).expect("write retried synthetic package");
+            fs::write(marker, b"1").expect("write synthetic attempt count");
+            return;
+        }
+
+        let previous = fs::read_to_string(&marker)
+            .ok()
+            .and_then(|value| value.parse::<u8>().ok())
+            .unwrap_or(0);
+        fs::write(&marker, (previous + 1).to_string()).expect("write synthetic attempt count");
+        if previous == 0 {
+            io::stdout()
+                .write_all(b"!<arch>\npartial response")
+                .expect("write partial synthetic package");
+            process::exit(28);
+        }
+    }
+
     let mut input = File::open(source).expect("open synthetic source package");
     io::copy(&mut input, &mut io::stdout()).expect("write synthetic package bytes");
 }

@@ -372,6 +372,43 @@ fn ensure_downloads_only_verified_bytes_and_leaves_no_temporary_file() {
 }
 
 #[test]
+fn ensure_retries_partial_download_without_appending_its_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("fictional-source.deb");
+    fs::write(&source, SYNTHETIC_AR).unwrap();
+    let fake_bin = directory.path().join("fake-bin");
+    compile_fake_curl(&fake_bin);
+    let attempts = directory.path().join("curl-attempts");
+
+    let output = tool()
+        .args(["ensure", "--build-dir"])
+        .arg(directory.path())
+        .args([
+            "--version",
+            VALID_VERSION,
+            "--sha256",
+            &digest(SYNTHETIC_AR),
+        ])
+        .env("PATH", path_with(&fake_bin))
+        .env("SYNTHETIC_DEB", &source)
+        .env("SYNTHETIC_CURL_PARTIAL_RETRY", "1")
+        .env("SYNTHETIC_CURL_ATTEMPT_MARKER", &attempts)
+        .output()
+        .expect("run uyou-deb ensure");
+
+    assert!(
+        output.status.success(),
+        "partial transfer was not safely retried: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(attempts).unwrap(), "2");
+    assert_eq!(
+        fs::read(package_path(directory.path(), VALID_VERSION)).unwrap(),
+        SYNTHETIC_AR
+    );
+}
+
+#[test]
 fn ensure_rejects_a_download_with_the_wrong_digest_and_leaves_no_file() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("fictional-source.deb");
