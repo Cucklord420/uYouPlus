@@ -349,13 +349,10 @@ fn cleanup_temporary_copy(staged_copy: tempfile::NamedTempFile, error: io::Error
     match staged_copy.close() {
         Ok(()) => error,
         Err(cleanup_error) if cleanup_error.kind() == io::ErrorKind::NotFound => error,
-        Err(cleanup_error) => io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "{error}; cannot remove temporary IPA copy {}: {cleanup_error}",
-                path.display()
-            ),
-        ),
+        Err(cleanup_error) => io::Error::other(format!(
+            "{error}; cannot remove temporary IPA copy {}: {cleanup_error}",
+            path.display()
+        )),
     }
 }
 
