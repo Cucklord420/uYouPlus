@@ -1354,6 +1354,55 @@ mod tests {
     }
 
     #[test]
+    fn allocation_preflight_rejects_tiny_files_with_many_implicit_directories() {
+        // 7,801 files, 975,002 directories and 998,403 indexed components;
+        // all paths fit the existing depth/count limits. Do not extract this tree.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("directory-heavy.ipa");
+        let mut writer = ZipWriter::new(File::create(&path).unwrap());
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        writer
+            .start_file("Payload/YouTube.app/Info.plist", options)
+            .unwrap();
+        writer.write_all(PLIST.as_bytes()).unwrap();
+        let nested = "d/".repeat(124);
+        for branch in 0..7_800 {
+            writer
+                .start_file(
+                    format!("Payload/YouTube.app/b{branch:04}/{nested}f"),
+                    options,
+                )
+                .unwrap();
+            writer.write_all(b"x").unwrap();
+        }
+        writer.finish().unwrap();
+        let sha = format!("{:x}", Sha256::digest(fs::read(&path).unwrap()));
+        let (_, _, app_size) = verified_archive(&path, &sha).unwrap();
+        let space = DiskSpace {
+            volume: 7,
+            free_bytes: 5 * BYTES_PER_GIB,
+        };
+        assert!(
+            ensure_preflight_space(app_size, space, space).is_err(),
+            "tiny logical size must not hide the allocation of nearly a million directories"
+        );
+    }
+
+    #[test]
+    fn allocation_preflight_rounds_small_files_before_reserving_both_copies() {
+        let (temp, sha) = fixture(&[("Payload/YouTube.app/second", b"x")]);
+        let (_, _, app_size) = verified_archive(&temp.path().join("fixture.ipa"), &sha).unwrap();
+        let space = DiskSpace {
+            volume: 7,
+            free_bytes: DISK_RESERVE_BYTES + 4096,
+        };
+        assert!(
+            ensure_preflight_space(app_size, space, space).is_err(),
+            "four tiny file copies need more than one allocation block"
+        );
+    }
+
+    #[test]
     fn insufficient_space_fails_before_creating_staging_or_payload() {
         let (temp, sha) = fixture(&[("Payload/YouTube.app/file", b"synthetic app data")]);
         let ipa = temp.path().join("fixture.ipa");
