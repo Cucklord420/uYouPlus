@@ -9,9 +9,13 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
+use std::time::Duration;
 
 const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_CURL_ERROR_BYTES: u64 = 64 * 1024;
+const MAX_DOWNLOAD_ATTEMPTS: usize = 3;
+const HTTP_STATUS_MARKER: &str = "__UYOU_HTTP_STATUS__";
+const RETRYABLE_HTTP_STATUSES: [u16; 8] = [408, 429, 500, 502, 503, 504, 522, 524];
 const AR_MAGIC: &[u8; 8] = b"!<arch>\n";
 const RELEASE_BASE: &str = "https://repo.miro92.com/debs/com.miro.uyou_";
 const PACKAGE_SUFFIX: &str = "_iphoneos-arm.deb";
@@ -129,8 +133,32 @@ trait Downloader {
 
 struct CurlDownloader;
 
-impl Downloader for CurlDownloader {
-    fn download(&self, url: &str, destination: &mut File) -> Result<()> {
+enum CurlAttemptFailure {
+    Retryable(String),
+    Fatal(String),
+}
+
+fn http_status_from_curl_stderr(stderr: &[u8]) -> Option<u16> {
+    let text = String::from_utf8_lossy(stderr);
+    let (_, status) = text.rsplit_once(HTTP_STATUS_MARKER)?;
+    let status = status.trim().parse::<u16>().ok()?;
+    (100..=599).contains(&status).then_some(status)
+}
+
+fn curl_error_detail(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    text.split(HTTP_STATUS_MARKER)
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+impl CurlDownloader {
+    fn download_attempt(
+        url: &str,
+        destination: &mut File,
+    ) -> std::result::Result<(), CurlAttemptFailure> {
         let mut command = Command::new("curl");
         command
             .args([
@@ -150,27 +178,25 @@ impl Downloader for CurlDownloader {
                 "600",
                 "--max-filesize",
                 "536870912",
-                "--retry",
-                "2",
                 "--output",
                 "-",
+                "--write-out",
+                "%{stderr}__UYOU_HTTP_STATUS__%{http_code}\n",
             ])
             .arg(url)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("cannot start HTTPS package download: {error}"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "cannot read HTTPS package download".to_string())?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| "cannot read HTTPS download diagnostics".to_string())?;
+        let mut child = command.spawn().map_err(|error| {
+            CurlAttemptFailure::Fatal(format!("cannot start HTTPS package download: {error}"))
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            CurlAttemptFailure::Fatal("cannot read HTTPS package download".into())
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            CurlAttemptFailure::Fatal("cannot read HTTPS download diagnostics".into())
+        })?;
         let stderr_reader = thread::spawn(move || {
             let mut limited = stderr.take(MAX_CURL_ERROR_BYTES + 1);
             let mut bytes = Vec::new();
@@ -186,29 +212,70 @@ impl Downloader for CurlDownloader {
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = stderr_reader.join();
-                return Err(format!("cannot save downloaded uYou package: {error}"));
+                return Err(CurlAttemptFailure::Fatal(format!(
+                    "cannot save downloaded uYou package: {error}"
+                )));
             }
         };
         drop(limited);
         if copied > MAX_PACKAGE_BYTES {
             let _ = child.kill();
         }
-        let status = child
-            .wait()
-            .map_err(|error| format!("cannot wait for HTTPS package download: {error}"))?;
+        let status = child.wait().map_err(|error| {
+            CurlAttemptFailure::Fatal(format!("cannot wait for HTTPS package download: {error}"))
+        })?;
         let stderr = stderr_reader.join().unwrap_or_default();
         if copied > MAX_PACKAGE_BYTES {
-            return Err("uYou package exceeds the 512 MiB size limit".into());
+            return Err(CurlAttemptFailure::Fatal(
+                "uYou package exceeds the 512 MiB size limit".into(),
+            ));
         }
         if !status.success() {
-            let detail = String::from_utf8_lossy(&stderr);
-            return Err(if detail.trim().is_empty() {
+            let http_status = http_status_from_curl_stderr(&stderr);
+            let detail = curl_error_detail(&stderr);
+            let message = if detail.is_empty() {
                 format!("HTTPS package download failed with {status}")
             } else {
-                format!("HTTPS package download failed: {}", detail.trim())
+                format!("HTTPS package download failed: {detail}")
+            };
+            let retryable = status.code() == Some(28)
+                || (status.code() == Some(22)
+                    && http_status.is_some_and(|code| RETRYABLE_HTTP_STATUSES.contains(&code)));
+            return Err(if retryable {
+                CurlAttemptFailure::Retryable(message)
+            } else {
+                CurlAttemptFailure::Fatal(message)
             });
         }
         Ok(())
+    }
+}
+
+impl Downloader for CurlDownloader {
+    fn download(&self, url: &str, destination: &mut File) -> Result<()> {
+        let mut last_error = "HTTPS package download failed".to_string();
+        for attempt in 0..MAX_DOWNLOAD_ATTEMPTS {
+            destination
+                .set_len(0)
+                .map_err(|error| format!("cannot reset temporary uYou package: {error}"))?;
+            destination
+                .seek(SeekFrom::Start(0))
+                .map_err(|error| format!("cannot rewind temporary uYou package: {error}"))?;
+
+            match Self::download_attempt(url, destination) {
+                Ok(()) => return Ok(()),
+                Err(CurlAttemptFailure::Retryable(error))
+                    if attempt + 1 < MAX_DOWNLOAD_ATTEMPTS =>
+                {
+                    last_error = error;
+                    thread::sleep(Duration::from_secs((attempt + 1) as u64));
+                }
+                Err(CurlAttemptFailure::Retryable(error) | CurlAttemptFailure::Fatal(error)) => {
+                    return Err(error);
+                }
+            }
+        }
+        Err(last_error)
     }
 }
 

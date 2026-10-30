@@ -17,6 +17,7 @@ fn main() {
         ("--max-time", "600"),
         ("--max-filesize", "536870912"),
         ("--output", "-"),
+        ("--write-out", "%{stderr}__UYOU_HTTP_STATUS__%{http_code}\n"),
     ];
     if !["--fail", "--location", "--silent", "--show-error"]
         .iter()
