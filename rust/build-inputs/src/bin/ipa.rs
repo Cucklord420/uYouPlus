@@ -1,7 +1,7 @@
 // IPA checksum and ZIP/plist verifier with isolated app-bundle preparation.
 // The supplied IPA is preserved; archive contents are promoted only after verification.
 
-use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 use uyouplus_inputs::{
-    archive::{verified_archive, AppFootprint},
+    archive::{rounded_allocation, verified_archive, AppFootprint},
     validate_ipa_url,
 };
 use zip::ZipArchive;
@@ -873,6 +873,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::io::Write;
     use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 

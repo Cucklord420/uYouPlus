@@ -62,7 +62,7 @@ fn archive_directory_count(node: &ArchivePathNode) -> u64 {
         .sum()
 }
 
-fn rounded_allocation(bytes: u64, unit: u64) -> Result<u64, String> {
+pub fn rounded_allocation(bytes: u64, unit: u64) -> Result<u64, String> {
     if unit == 0 {
         return Err("Invalid filesystem allocation unit".into());
     }
