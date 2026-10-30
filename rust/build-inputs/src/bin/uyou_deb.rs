@@ -277,9 +277,7 @@ impl CurlDownloader {
         let stderr = child.stderr.take().ok_or_else(|| {
             CurlAttemptFailure::Fatal("cannot read HTTPS download diagnostics".into())
         })?;
-        let stderr_reader = thread::spawn(move || {
-            capture_curl_stderr(stderr)
-        });
+        let stderr_reader = thread::spawn(move || capture_curl_stderr(stderr));
 
         let mut limited = stdout.take(MAX_PACKAGE_BYTES + 1);
         let copied = match io::copy(&mut limited, destination) {
@@ -354,8 +352,7 @@ impl Downloader for CurlDownloader {
                 Err(CurlAttemptFailure::Retryable {
                     message,
                     retry_after,
-                }) if attempt + 1 < MAX_DOWNLOAD_ATTEMPTS =>
-                {
+                }) if attempt + 1 < MAX_DOWNLOAD_ATTEMPTS => {
                     last_error = message;
                     thread::sleep(
                         retry_after.unwrap_or_else(|| Duration::from_secs((attempt + 1) as u64)),
@@ -740,9 +737,8 @@ mod tests {
         let captured = capture_curl_stderr(io::Cursor::new(stderr)).unwrap();
 
         assert!(captured.len() <= MAX_CURL_ERROR_PREFIX_BYTES + 32 + MAX_CURL_ERROR_TAIL_BYTES);
-        assert!(String::from_utf8_lossy(&captured).ends_with(
-            "__UYOU_HTTP_STATUS__503\n__UYOU_RETRY_AFTER__2\n"
-        ));
+        assert!(String::from_utf8_lossy(&captured)
+            .ends_with("__UYOU_HTTP_STATUS__503\n__UYOU_RETRY_AFTER__2\n"));
     }
 
     #[test]
