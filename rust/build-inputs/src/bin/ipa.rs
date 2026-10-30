@@ -1757,6 +1757,72 @@ mod tests {
     }
 
     #[test]
+    fn shared_apfs_pool_is_budgeted_once_across_distinct_volumes() {
+        // These two volume IDs refer to one APFS container with 5.5 GiB free.
+        // Either copy fits separately; both copies plus the reserve do not.
+        let footprint = AppFootprint {
+            logical_bytes: BYTES_PER_GIB,
+            file_sizes: vec![BYTES_PER_GIB],
+            directories: 2,
+        };
+        let staging = DiskSpace {
+            volume: 7,
+            free_bytes: 11 * BYTES_PER_GIB / 2,
+            allocation_unit: 4096,
+        };
+        let payload = DiskSpace {
+            volume: 9,
+            ..staging
+        };
+        assert!(
+            ensure_preflight_space(&footprint, staging, payload).is_err(),
+            "different APFS volume IDs must not double-count one shared free-space pool"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extraction_error_reports_owned_staging_cleanup_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, sha) = fixture(&[]);
+        let staging = temp.path().join("staging");
+        let payload = temp.path().join("Payload");
+        let result = prepare_with_space_provider(
+            &temp.path().join("fixture.ipa"),
+            &sha,
+            &staging,
+            &payload,
+            |_| {
+                if staging.exists() {
+                    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o500)).unwrap();
+                    return Err("synthetic reserve failure".into());
+                }
+                Ok(DiskSpace {
+                    volume: 7,
+                    free_bytes: 100 * BYTES_PER_GIB,
+                    allocation_unit: 4096,
+                })
+            },
+        );
+        // Restore permissions before assertions so the fixture can clean itself up.
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            staging.exists(),
+            "the fixture must leave actual cleanup residue"
+        );
+        let error = result.unwrap_err();
+        assert!(error.contains("synthetic reserve failure"), "{error}");
+        assert!(
+            error.contains("cleanup failed"),
+            "the cleanup failure was hidden: {error}"
+        );
+        assert!(
+            error.contains(&staging.display().to_string()),
+            "residue path missing: {error}"
+        );
+    }
+
+    #[test]
     fn insufficient_space_fails_before_creating_staging_or_payload() {
         let (temp, sha) = fixture(&[("Payload/YouTube.app/file", b"synthetic app data")]);
         let ipa = temp.path().join("fixture.ipa");
