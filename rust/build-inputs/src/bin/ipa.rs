@@ -52,6 +52,56 @@ fn canonical_path_component(component: &str) -> String {
     component.nfd().default_case_fold().nfd().collect()
 }
 
+#[derive(Debug)]
+struct AppFootprint {
+    logical_bytes: u64,
+    file_sizes: Vec<u64>,
+    // Includes the Payload wrapper, but excludes the fresh outer output directory.
+    directories: u64,
+}
+
+fn archive_directory_count(node: &ArchivePathNode) -> u64 {
+    node.children
+        .values()
+        .filter(|child| child.kind == ArchivePathKind::Directory)
+        .map(|child| 1 + archive_directory_count(child))
+        .sum()
+}
+
+fn rounded_allocation(bytes: u64, unit: u64) -> Result<u64, String> {
+    if unit == 0 {
+        return Err("Invalid filesystem allocation unit".into());
+    }
+    bytes
+        .checked_add(unit - 1)
+        .map(|size| size / unit)
+        .and_then(|blocks| blocks.checked_mul(unit))
+        .ok_or_else(|| "IPA allocation estimate overflow".into())
+}
+
+impl AppFootprint {
+    fn allocation_estimate(&self, unit: u64) -> Result<u64, String> {
+        // Budget rounded file data, a directory-data block per unique directory,
+        // and one metadata block per file/directory. Include the fresh output root.
+        // Counting Payload for both copies deliberately overestimates promotion.
+        // This is conservative headroom, not an exact APFS metadata bound.
+        let object_blocks = self
+            .directories
+            .checked_add(1)
+            .and_then(|directories| directories.checked_mul(2))
+            .and_then(|blocks| blocks.checked_add(self.file_sizes.len() as u64))
+            .and_then(|blocks| blocks.checked_mul(unit))
+            .ok_or("IPA allocation estimate overflow")?;
+        self.file_sizes
+            .iter()
+            .try_fold(object_blocks, |total, size| {
+                total
+                    .checked_add(rounded_allocation(*size, unit)?)
+                    .ok_or_else(|| "IPA allocation estimate overflow".into())
+            })
+    }
+}
+
 fn register_archive_path(
     root: &mut ArchivePathNode,
     name: &str,
@@ -120,7 +170,7 @@ fn register_archive_path(
 fn verified_archive(
     path: &Path,
     expected: &str,
-) -> Result<(ZipArchive<File>, String, u64), String> {
+) -> Result<(ZipArchive<File>, String, AppFootprint), String> {
     let sha = Regex::new(r"(?i)^[0-9a-f]{64}$").unwrap();
     if !sha.is_match(expected) {
         return Err("Invalid SHA-256 digest".into());
@@ -147,6 +197,7 @@ fn verified_archive(
     let mut indexed_path_components = 0;
     let mut total = 0u64;
     let mut app_bundle_size = 0u64;
+    let mut app_file_sizes = Vec::new();
     let mut manifest_index = None;
     for index in 0..archive.len() {
         let member = archive.by_index(index).map_err(|e| e.to_string())?;
@@ -204,6 +255,7 @@ fn verified_archive(
             app_bundle_size = app_bundle_size
                 .checked_add(member.size())
                 .ok_or("IPA decompressed size exceeds safety limit")?;
+            app_file_sizes.push(member.size());
         }
         if total > 8 * 1024 * 1024 * 1024 {
             return Err("IPA decompressed size exceeds safety limit".into());
@@ -243,7 +295,12 @@ fn verified_archive(
     if !pattern.is_match(version) {
         return Err("Invalid YouTube CFBundleVersion".into());
     }
-    Ok((archive, version.to_owned(), app_bundle_size))
+    let footprint = AppFootprint {
+        logical_bytes: app_bundle_size,
+        file_sizes: app_file_sizes,
+        directories: archive_directory_count(&paths),
+    };
+    Ok((archive, version.to_owned(), footprint))
 }
 
 fn verify(path: &Path, expected: &str) -> Result<String, String> {
@@ -498,6 +555,7 @@ fn download_ipa(url: &str, url_environment: &str, path: &Path) -> Result<(), Str
 struct DiskSpace {
     volume: u64,
     free_bytes: u64,
+    allocation_unit: u64,
 }
 
 #[cfg(unix)]
@@ -527,9 +585,13 @@ fn filesystem_space(path: &Path) -> Result<DiskSpace, String> {
         native.f_frsize as u128
     };
     let free_bytes = ((native.f_bavail as u128) * block_size).min(u64::MAX as u128) as u64;
+    if block_size == 0 || block_size > u64::MAX as u128 {
+        return Err("Invalid filesystem allocation unit".into());
+    }
     Ok(DiskSpace {
         volume: metadata.dev(),
         free_bytes,
+        allocation_unit: block_size as u64,
     })
 }
 
@@ -539,23 +601,22 @@ fn filesystem_space(_path: &Path) -> Result<DiskSpace, String> {
 }
 
 fn ensure_preflight_space(
-    app_bundle_size: u64,
+    footprint: &AppFootprint,
     staging: DiskSpace,
     payload: DiskSpace,
 ) -> Result<(), String> {
-    let per_copy_with_reserve = app_bundle_size
-        .checked_add(DISK_RESERVE_BYTES)
-        .ok_or("IPA extraction space requirement overflow")?;
+    let staging_estimate = footprint.allocation_estimate(staging.allocation_unit)?;
+    let payload_estimate = footprint.allocation_estimate(payload.allocation_unit)?;
     if staging.volume == payload.volume {
-        let both_copies_with_reserve = app_bundle_size
-            .checked_mul(2)
+        let both_copies_with_reserve = staging_estimate
+            .checked_add(payload_estimate)
             .and_then(|size| size.checked_add(DISK_RESERVE_BYTES))
             .ok_or("IPA extraction space requirement overflow")?;
         if staging.free_bytes.min(payload.free_bytes) < both_copies_with_reserve {
             return Err("Insufficient free space for IPA extraction and promotion".into());
         }
-    } else if staging.free_bytes < per_copy_with_reserve
-        || payload.free_bytes < per_copy_with_reserve
+    } else if staging.free_bytes.saturating_sub(DISK_RESERVE_BYTES) < staging_estimate
+        || payload.free_bytes.saturating_sub(DISK_RESERVE_BYTES) < payload_estimate
     {
         return Err("Insufficient free space for IPA extraction and promotion".into());
     }
@@ -580,8 +641,73 @@ fn ensure_absent_output(path: &Path) -> Result<PathBuf, String> {
     Ok(parent.join(name))
 }
 
-fn checked_new_directory(path: &Path) -> Result<(), String> {
+fn check_live_reserve<F>(
+    path: &Path,
+    pending_bytes: u64,
+    space_for_path: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<DiskSpace, String>,
+{
+    let space = space_for_path(path)?;
+    let pending = rounded_allocation(pending_bytes, space.allocation_unit)?
+        .checked_add(
+            space
+                .allocation_unit
+                .checked_mul(2)
+                .ok_or("IPA allocation estimate overflow")?,
+        )
+        .and_then(|size| size.checked_add(DISK_RESERVE_BYTES))
+        .ok_or("IPA allocation estimate overflow")?;
+    if space.free_bytes < pending {
+        return Err("Insufficient live free space to retain the IPA reserve".into());
+    }
+    Ok(())
+}
+
+struct ReserveWriter<'a, W, F> {
+    output: W,
+    directory: &'a Path,
+    space_for_path: &'a mut F,
+}
+
+impl<W: Write, F: FnMut(&Path) -> Result<DiskSpace, String>> Write for ReserveWriter<'_, W, F> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        check_live_reserve(self.directory, bytes.len() as u64, self.space_for_path)
+            .map_err(io::Error::other)?;
+        self.output.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()?;
+        check_live_reserve(self.directory, 0, self.space_for_path).map_err(io::Error::other)
+    }
+}
+
+fn checked_new_directory<F>(path: &Path, space_for_path: &mut F) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<DiskSpace, String>,
+{
+    let parent = path.parent().ok_or("New directory must have a parent")?;
+    check_live_reserve(parent, 0, space_for_path)?;
     fs::create_dir(path).map_err(|error| error.to_string())
+}
+
+fn create_app_directories<F>(path: &Path, space_for_path: &mut F) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<DiskSpace, String>,
+{
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => return Ok(()),
+        Ok(_) => return Err("App directory path is not a regular directory".into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    create_app_directories(
+        path.parent().ok_or("App directory must have a parent")?,
+        space_for_path,
+    )?;
+    checked_new_directory(path, space_for_path)
 }
 
 #[cfg(unix)]
@@ -601,10 +727,11 @@ fn set_archive_mode(_path: &Path, _mode: u32, _directory: bool) -> Result<(), St
     Ok(())
 }
 
-fn extract_app_bundle<R: Read + Seek>(
+fn extract_app_bundle<R: Read + Seek, F: FnMut(&Path) -> Result<DiskSpace, String>>(
     archive: &mut ZipArchive<R>,
     staging_dir: &Path,
     max_app_bundle_size: u64,
+    space_for_path: &mut F,
 ) -> Result<(), String> {
     let mut directory_modes = Vec::new();
     let mut extracted_bytes = 0u64;
@@ -617,7 +744,7 @@ fn extract_app_bundle<R: Read + Seek>(
         }
         if name == "Payload/" {
             let target = staging_dir.join("Payload");
-            fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+            create_app_directories(&target, space_for_path)?;
             if let Some(mode) = member.unix_mode() {
                 directory_modes.push((target, mode));
             }
@@ -632,19 +759,26 @@ fn extract_app_bundle<R: Read + Seek>(
             .ok_or("Unsafe IPA archive entry path")?;
         let target = staging_dir.join(enclosed);
         if member.is_dir() {
-            fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+            create_app_directories(&target, space_for_path)?;
             if let Some(mode) = member.unix_mode() {
                 directory_modes.push((target, mode));
             }
         } else {
             if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                create_app_directories(parent, space_for_path)?;
             }
-            let mut output = OpenOptions::new()
+            let parent = target.parent().ok_or("App file must have a parent")?;
+            check_live_reserve(parent, 0, space_for_path)?;
+            let file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&target)
                 .map_err(|error| error.to_string())?;
+            let mut output = ReserveWriter {
+                output: file,
+                directory: parent,
+                space_for_path,
+            };
             let expected_size = member.size();
             let remaining = max_app_bundle_size
                 .checked_sub(extracted_bytes)
@@ -667,6 +801,7 @@ fn extract_app_bundle<R: Read + Seek>(
                 .checked_add(copied)
                 .ok_or("IPA decompressed size exceeds safety limit")?;
             output.flush().map_err(|error| error.to_string())?;
+            drop(output);
             if let Some(mode) = member.unix_mode() {
                 set_archive_mode(&target, mode, false)?;
             }
@@ -679,47 +814,70 @@ fn extract_app_bundle<R: Read + Seek>(
 
     directory_modes.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
     for (path, mode) in directory_modes {
+        check_live_reserve(staging_dir, 0, space_for_path)?;
         set_archive_mode(&path, mode, true)?;
     }
-    Ok(())
+    check_live_reserve(staging_dir, 0, space_for_path)
 }
 
-fn copy_app_file(source: &Path, destination: &Path) -> Result<(), String> {
+fn copy_app_file<F: FnMut(&Path) -> Result<DiskSpace, String>>(
+    source: &Path,
+    destination: &Path,
+    space_for_path: &mut F,
+) -> Result<(), String> {
     let metadata = fs::symlink_metadata(source).map_err(|error| error.to_string())?;
     if !metadata.file_type().is_file() {
         return Err("Staged IPA contains a non-regular app member".into());
     }
     let mut input = File::open(source).map_err(|error| error.to_string())?;
-    let mut output = OpenOptions::new()
+    let parent = destination.parent().ok_or("App file must have a parent")?;
+    check_live_reserve(parent, 0, space_for_path)?;
+    let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
         .map_err(|error| error.to_string())?;
-    io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
+    let mut output = ReserveWriter {
+        output: file,
+        directory: parent,
+        space_for_path,
+    };
+    let copied = copy_stream_with_limit(&mut input, &mut output, metadata.len())
+        .map_err(|_| "Unable to promote IPA app member while retaining the disk reserve")?;
+    if copied != metadata.len() {
+        return Err("Staged IPA app member changed size".into());
+    }
     output.flush().map_err(|error| error.to_string())?;
+    drop(output);
     fs::set_permissions(destination, metadata.permissions()).map_err(|error| error.to_string())
 }
 
-fn copy_app_directory(source: &Path, destination: &Path) -> Result<(), String> {
+fn copy_app_directory<F: FnMut(&Path) -> Result<DiskSpace, String>>(
+    source: &Path,
+    destination: &Path,
+    space_for_path: &mut F,
+) -> Result<(), String> {
     let metadata = fs::symlink_metadata(source).map_err(|error| error.to_string())?;
     if !metadata.file_type().is_dir() {
         return Err("Staged IPA app bundle is not a directory".into());
     }
-    checked_new_directory(destination)?;
+    checked_new_directory(destination, space_for_path)?;
     for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let source_child = entry.path();
         let destination_child = destination.join(entry.file_name());
         let child_type = entry.file_type().map_err(|error| error.to_string())?;
         if child_type.is_dir() {
-            copy_app_directory(&source_child, &destination_child)?;
+            copy_app_directory(&source_child, &destination_child, space_for_path)?;
         } else if child_type.is_file() {
-            copy_app_file(&source_child, &destination_child)?;
+            copy_app_file(&source_child, &destination_child, space_for_path)?;
         } else {
             return Err("Staged IPA contains a non-regular app member".into());
         }
     }
-    fs::set_permissions(destination, metadata.permissions()).map_err(|error| error.to_string())
+    check_live_reserve(destination, 0, space_for_path)?;
+    fs::set_permissions(destination, metadata.permissions()).map_err(|error| error.to_string())?;
+    check_live_reserve(destination, 0, space_for_path)
 }
 
 fn prepare(
@@ -753,7 +911,7 @@ where
         return Err("Staging and payload destinations must not overlap".into());
     }
 
-    let (mut archive, version, app_bundle_size) = verified_archive(path, expected)?;
+    let (mut archive, version, footprint) = verified_archive(path, expected)?;
     let staging_parent = staging
         .parent()
         .ok_or("Staging destination must have an existing parent")?;
@@ -762,20 +920,32 @@ where
         .ok_or("Payload destination must have an existing parent")?;
     let staging_space = space_for_path(staging_parent)?;
     let payload_space = space_for_path(payload_parent)?;
-    ensure_preflight_space(app_bundle_size, staging_space, payload_space)?;
+    ensure_preflight_space(&footprint, staging_space, payload_space)?;
 
-    checked_new_directory(&staging)?;
-    if let Err(error) = extract_app_bundle(&mut archive, &staging, app_bundle_size) {
+    checked_new_directory(&staging, &mut space_for_path)?;
+    if let Err(error) = extract_app_bundle(
+        &mut archive,
+        &staging,
+        footprint.logical_bytes,
+        &mut space_for_path,
+    ) {
         let _ = fs::remove_dir_all(&staging);
         return Err(error);
     }
 
     let staged_app = staging.join("Payload/YouTube.app");
-    if let Err(error) = checked_new_directory(&payload) {
+    if let Err(error) = checked_new_directory(&payload, &mut space_for_path) {
         let _ = fs::remove_dir_all(&staging);
         return Err(error);
     }
-    if let Err(error) = copy_app_directory(&staged_app, &payload.join("YouTube.app")) {
+    let promoted = copy_app_directory(
+        &staged_app,
+        &payload.join("YouTube.app"),
+        &mut space_for_path,
+    )
+    .and_then(|_| check_live_reserve(staging_parent, 0, &mut space_for_path))
+    .and_then(|_| check_live_reserve(payload_parent, 0, &mut space_for_path));
+    if let Err(error) = promoted {
         let _ = fs::remove_dir_all(&payload);
         let _ = fs::remove_dir_all(&staging);
         return Err(error);
@@ -1299,54 +1469,67 @@ mod tests {
 
     #[test]
     fn extraction_preflight_accounts_for_both_copies_and_reserve() {
-        let app_size = 1024;
-        let same_volume_required = 2 * app_size + DISK_RESERVE_BYTES;
+        let app_size = AppFootprint {
+            logical_bytes: 1024,
+            file_sizes: vec![1024],
+            directories: 2,
+        };
+        // Each copy: 3 directory-data + 4 object-metadata + 1 file-data blocks.
+        let same_volume_required = 65_536 + DISK_RESERVE_BYTES;
         assert!(ensure_preflight_space(
-            app_size,
+            &app_size,
             DiskSpace {
                 volume: 7,
+                allocation_unit: 4096,
                 free_bytes: same_volume_required
             },
             DiskSpace {
                 volume: 7,
+                allocation_unit: 4096,
                 free_bytes: same_volume_required
             },
         )
         .is_ok());
         assert!(ensure_preflight_space(
-            app_size,
+            &app_size,
             DiskSpace {
                 volume: 7,
+                allocation_unit: 4096,
                 free_bytes: same_volume_required - 1
             },
             DiskSpace {
                 volume: 7,
+                allocation_unit: 4096,
                 free_bytes: same_volume_required - 1
             },
         )
         .is_err());
 
-        let separate_volume_required = app_size + DISK_RESERVE_BYTES;
+        let separate_volume_required = 32_768 + DISK_RESERVE_BYTES;
         assert!(ensure_preflight_space(
-            app_size,
+            &app_size,
             DiskSpace {
                 volume: 7,
+                allocation_unit: 4096,
                 free_bytes: separate_volume_required
             },
             DiskSpace {
                 volume: 9,
+                allocation_unit: 4096,
                 free_bytes: separate_volume_required
             },
         )
         .is_ok());
         assert!(ensure_preflight_space(
-            app_size,
+            &app_size,
             DiskSpace {
                 volume: 7,
+                allocation_unit: 4096,
                 free_bytes: separate_volume_required
             },
             DiskSpace {
                 volume: 9,
+                allocation_unit: 4096,
                 free_bytes: separate_volume_required - 1
             },
         )
@@ -1378,12 +1561,15 @@ mod tests {
         writer.finish().unwrap();
         let sha = format!("{:x}", Sha256::digest(fs::read(&path).unwrap()));
         let (_, _, app_size) = verified_archive(&path, &sha).unwrap();
+        assert_eq!(app_size.directories, 975_002);
+        assert_eq!(app_size.file_sizes.len(), 7_801);
         let space = DiskSpace {
             volume: 7,
+            allocation_unit: 4096,
             free_bytes: 5 * BYTES_PER_GIB,
         };
         assert!(
-            ensure_preflight_space(app_size, space, space).is_err(),
+            ensure_preflight_space(&app_size, space, space).is_err(),
             "tiny logical size must not hide the allocation of nearly a million directories"
         );
     }
@@ -1394,10 +1580,11 @@ mod tests {
         let (_, _, app_size) = verified_archive(&temp.path().join("fixture.ipa"), &sha).unwrap();
         let space = DiskSpace {
             volume: 7,
+            allocation_unit: 4096,
             free_bytes: DISK_RESERVE_BYTES + 4096,
         };
         assert!(
-            ensure_preflight_space(app_size, space, space).is_err(),
+            ensure_preflight_space(&app_size, space, space).is_err(),
             "four tiny file copies need more than one allocation block"
         );
     }
@@ -1415,6 +1602,7 @@ mod tests {
             |_| {
                 Ok(DiskSpace {
                     volume: 7,
+                    allocation_unit: 4096,
                     free_bytes: if staging.exists() {
                         DISK_RESERVE_BYTES
                     } else {
@@ -1444,6 +1632,7 @@ mod tests {
             |_| {
                 Ok(DiskSpace {
                     volume: 7,
+                    allocation_unit: 4096,
                     free_bytes: if payload.exists() {
                         DISK_RESERVE_BYTES
                     } else {
@@ -1477,6 +1666,7 @@ mod tests {
                     fs::metadata(&streamed_file).is_ok_and(|metadata| metadata.len() >= 64 * 1024);
                 Ok(DiskSpace {
                     volume: 7,
+                    allocation_unit: 4096,
                     free_bytes: if pressure {
                         DISK_RESERVE_BYTES
                     } else {
@@ -1494,6 +1684,79 @@ mod tests {
     }
 
     #[test]
+    fn allocation_preflight_uses_each_destination_allocation_unit() {
+        let footprint = AppFootprint {
+            logical_bytes: 1,
+            file_sizes: vec![1],
+            directories: 2,
+        };
+        let staging = DiskSpace {
+            volume: 7,
+            free_bytes: DISK_RESERVE_BYTES + 32_768,
+            allocation_unit: 4096,
+        };
+        let payload = DiskSpace {
+            volume: 9,
+            free_bytes: DISK_RESERVE_BYTES + 65_536,
+            allocation_unit: 8192,
+        };
+        assert!(ensure_preflight_space(&footprint, staging, payload).is_ok());
+        assert!(ensure_preflight_space(
+            &footprint,
+            staging,
+            DiskSpace {
+                free_bytes: payload.free_bytes - 1,
+                ..payload
+            }
+        )
+        .is_err());
+        assert!(ensure_preflight_space(
+            &footprint,
+            DiskSpace {
+                allocation_unit: 8192,
+                ..staging
+            },
+            payload
+        )
+        .is_err());
+        assert!(ensure_preflight_space(
+            &footprint,
+            DiskSpace {
+                allocation_unit: 0,
+                ..staging
+            },
+            payload
+        )
+        .is_err());
+        assert!(footprint.allocation_estimate(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn allocation_estimate_counts_explicit_and_shared_directories_once() {
+        let (temp, _) = fixture(&[
+            ("Payload/YouTube.app/Assets/a", b"x"),
+            ("Payload/YouTube.app/Assets/b", b"x"),
+        ]);
+        let path = temp.path().join("fixture.ipa");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let mut writer = ZipWriter::new_append(file).unwrap();
+        writer
+            .add_directory("Payload/YouTube.app/Assets/", SimpleFileOptions::default())
+            .unwrap();
+        writer.finish().unwrap();
+        let sha = format!("{:x}", Sha256::digest(fs::read(&path).unwrap()));
+        let (_, _, footprint) = verified_archive(&path, &sha).unwrap();
+        assert_eq!(footprint.directories, 3);
+        assert_eq!(footprint.file_sizes.len(), 3);
+        // 4 directory-data + 7 object-metadata + 3 file-data blocks.
+        assert_eq!(footprint.allocation_estimate(4096).unwrap(), 57_344);
+    }
+
+    #[test]
     fn insufficient_space_fails_before_creating_staging_or_payload() {
         let (temp, sha) = fixture(&[("Payload/YouTube.app/file", b"synthetic app data")]);
         let ipa = temp.path().join("fixture.ipa");
@@ -1505,6 +1768,7 @@ mod tests {
         let result = prepare_with_space_provider(&ipa, &sha, &staging, &payload, |_| {
             Ok(DiskSpace {
                 volume: 1,
+                allocation_unit: 4096,
                 free_bytes: DISK_RESERVE_BYTES,
             })
         });
