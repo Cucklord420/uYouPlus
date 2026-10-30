@@ -1,13 +1,13 @@
 #![cfg(unix)]
 
 use std::{
-    fs::{self, File},
-    io::Write,
+    fs::{self, File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
     os::unix::fs::{symlink, PermissionsExt},
     path::Path,
     process::{Command, Output, Stdio},
 };
-use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 const INFO_PLIST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>CFBundleVersion</key><string>19.25.4</string></dict></plist>"#;
@@ -26,6 +26,41 @@ fn write_ipa(path: &Path, extra: &[(&str, &[u8])]) {
         writer.write_all(contents).unwrap();
     }
     writer.finish().unwrap();
+}
+
+fn write_ipa_with_corrupt_member_data(path: &Path) {
+    let file = File::create(path).unwrap();
+    let mut writer = ZipWriter::new(file);
+    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    writer
+        .start_file("Payload/YouTube.app/Info.plist", deflated)
+        .unwrap();
+    writer.write_all(INFO_PLIST).unwrap();
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    writer
+        .start_file("Payload/YouTube.app/Corrupt.bin", stored)
+        .unwrap();
+    writer.write_all(b"intact member bytes").unwrap();
+    writer.finish().unwrap();
+
+    let file = File::open(path).unwrap();
+    let mut archive = ZipArchive::new(file).unwrap();
+    let member = archive.by_name("Payload/YouTube.app/Corrupt.bin").unwrap();
+    let data_start = member.data_start().unwrap();
+    drop(member);
+    drop(archive);
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    file.seek(SeekFrom::Start(data_start)).unwrap();
+    let mut byte = [0];
+    file.read_exact(&mut byte).unwrap();
+    byte[0] ^= 0xff;
+    file.seek(SeekFrom::Start(data_start)).unwrap();
+    file.write_all(&byte).unwrap();
 }
 
 fn executable(path: &Path, contents: &str) {
@@ -78,6 +113,17 @@ fn assert_blocked_before_make(root: &Path, input: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!marker.exists(), "Theos make ran for rejected input");
+    assert!(
+        !root.join("packages").exists(),
+        "package staging was created for rejected input"
+    );
+}
+
+#[test]
+fn missing_input_is_rejected_before_staging_or_make() {
+    let temp = tempfile::tempdir().unwrap();
+
+    assert_blocked_before_make(temp.path(), "missing.ipa");
 }
 
 #[test]
@@ -97,6 +143,28 @@ fn unsafe_ipa_member_is_rejected_before_make() {
     );
 
     assert_blocked_before_make(temp.path(), "unsafe.ipa");
+}
+
+#[test]
+fn case_folded_archive_path_collision_is_rejected_before_make() {
+    let temp = tempfile::tempdir().unwrap();
+    write_ipa(
+        &temp.path().join("collision.ipa"),
+        &[
+            ("Payload/YouTube.app/Cache.bin", b"first"),
+            ("Payload/YouTube.app/cache.bin", b"alias"),
+        ],
+    );
+
+    assert_blocked_before_make(temp.path(), "collision.ipa");
+}
+
+#[test]
+fn corrupt_member_data_is_rejected_before_make() {
+    let temp = tempfile::tempdir().unwrap();
+    write_ipa_with_corrupt_member_data(&temp.path().join("corrupt.ipa"));
+
+    assert_blocked_before_make(temp.path(), "corrupt.ipa");
 }
 
 #[test]
@@ -161,6 +229,17 @@ fn app_directory_checks_root_and_info_plist_but_trusts_contents() {
 }
 
 #[test]
+fn app_without_a_nonempty_regular_info_plist_is_rejected_before_make() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("missing plist.app");
+    fs::create_dir(&app).unwrap();
+    assert_blocked_before_make(temp.path(), "missing plist.app");
+
+    fs::write(app.join("Info.plist"), b"").unwrap();
+    assert_blocked_before_make(temp.path(), "missing plist.app");
+}
+
+#[test]
 fn symlinked_app_or_info_plist_is_rejected_before_make() {
     let temp = tempfile::tempdir().unwrap();
     let actual = temp.path().join("actual.app");
@@ -168,6 +247,7 @@ fn symlinked_app_or_info_plist_is_rejected_before_make() {
     fs::write(actual.join("Info.plist"), INFO_PLIST).unwrap();
     symlink(&actual, temp.path().join("linked.app")).unwrap();
     assert_blocked_before_make(temp.path(), "linked.app");
+    assert_blocked_before_make(temp.path(), "linked.app/");
 
     fs::remove_file(actual.join("Info.plist")).unwrap();
     fs::write(temp.path().join("external Info.plist"), INFO_PLIST).unwrap();
@@ -180,10 +260,23 @@ fn symlinked_app_or_info_plist_is_rejected_before_make() {
 }
 
 #[test]
+fn symlinked_ipa_is_rejected_before_make() {
+    let temp = tempfile::tempdir().unwrap();
+    let actual = temp.path().join("actual.ipa");
+    write_ipa(&actual, &[]);
+    symlink(&actual, temp.path().join("linked.ipa")).unwrap();
+
+    assert_blocked_before_make(temp.path(), "linked.ipa");
+}
+
+#[test]
 fn unsupported_or_wrong_type_input_is_rejected_before_make() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("archive.zip"), b"not accepted").unwrap();
     assert_blocked_before_make(temp.path(), "archive.zip");
+
+    fs::write(temp.path().join("not a directory.app"), b"not accepted").unwrap();
+    assert_blocked_before_make(temp.path(), "not a directory.app");
 
     fs::create_dir(temp.path().join("directory.ipa")).unwrap();
     assert_blocked_before_make(temp.path(), "directory.ipa");

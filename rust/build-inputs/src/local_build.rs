@@ -10,11 +10,13 @@ use std::{
     process::{Command, ExitStatus},
     time::{SystemTime, UNIX_EPOCH},
 };
+use uyouplus_inputs::archive::validate_local_ipa;
 
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 
 const BUILD_PROMPT: &str = "\x1b[34m==> \x1b[1;39mPath to the decrypted YouTube.ipa or YouTube.app. If nothing is provided, any ipa/app in the project's root directory will be used: ";
+const MAX_LOCAL_IPA_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 struct StagingDirectory(PathBuf);
 
@@ -100,6 +102,8 @@ pub fn run() -> Result<i32, String> {
         PathBuf::from(input)
     };
 
+    validate_local_input(&input_path)?;
+
     let package_directory = PathBuf::from("packages");
     let staging = StagingDirectory::create(&package_directory)?;
     let mut ipa_argument = OsString::from("IPA=");
@@ -137,6 +141,65 @@ pub fn run() -> Result<i32, String> {
             println!("Build output rejected: {error}");
             Ok(1)
         }
+    }
+}
+
+fn validate_local_input(path: &Path) -> Result<(), String> {
+    // Components omits trailing separators, so `link.app/` is checked with
+    // lstat semantics on `link.app` instead of following the directory link.
+    let checked_path = path
+        .components()
+        .fold(PathBuf::new(), |mut path, component| {
+            path.push(component.as_os_str());
+            path
+        });
+    let metadata = fs::symlink_metadata(&checked_path)
+        .map_err(|error| format!("Build input rejected: cannot inspect input: {error}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("Build input rejected: input cannot be a symbolic link".to_owned());
+    }
+
+    match checked_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some(extension) if extension.eq_ignore_ascii_case("ipa") => {
+            if !metadata.is_file() {
+                return Err("Build input rejected: IPA must be a regular file".to_owned());
+            }
+            if metadata.len() == 0 {
+                return Err("Build input rejected: IPA cannot be empty".to_owned());
+            }
+            if metadata.len() > MAX_LOCAL_IPA_BYTES {
+                return Err("Build input rejected: IPA exceeds the 4 GiB limit".to_owned());
+            }
+            validate_local_ipa(&checked_path)
+                .map_err(|error| format!("Build input rejected: invalid IPA: {error}"))
+        }
+        Some(extension) if extension.eq_ignore_ascii_case("app") => {
+            if !metadata.is_dir() {
+                return Err("Build input rejected: .app input must be a directory".to_owned());
+            }
+
+            let info_plist = checked_path.join("Info.plist");
+            let plist_metadata = fs::symlink_metadata(&info_plist).map_err(|error| {
+                format!("Build input rejected: cannot inspect .app Info.plist: {error}")
+            })?;
+            if plist_metadata.file_type().is_symlink() || !plist_metadata.is_file() {
+                return Err(
+                    "Build input rejected: .app Info.plist must be a regular non-symlink file"
+                        .to_owned(),
+                );
+            }
+            if plist_metadata.len() == 0 {
+                return Err("Build input rejected: .app Info.plist cannot be empty".to_owned());
+            }
+
+            // A user-selected .app is trusted after these boundary checks. Its
+            // contents are not recursively authenticated or scanned here.
+            Ok(())
+        }
+        _ => Err("Build input rejected: input must be a .ipa file or .app directory".to_owned()),
     }
 }
 

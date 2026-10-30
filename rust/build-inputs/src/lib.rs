@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Shared validation policy for manual build inputs and IPA downloads.
 
+pub mod archive;
+
 use regex::Regex;
 use std::net::IpAddr;
 use url::Url;
