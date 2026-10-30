@@ -4,7 +4,7 @@
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsString,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
@@ -294,35 +294,54 @@ fn copy_publish_without_overwrite(
     destination_path: &Path,
     expected_digest: &str,
 ) -> io::Result<()> {
-    let mut source = File::open(source_path)?;
-    let mut destination = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination_path)?;
-    let copy_result = io::copy(&mut source, &mut destination).and_then(|_| destination.sync_all());
-    drop(destination);
-    if let Err(error) = copy_result {
-        return Err(cleanup_partial_output(destination_path, error));
-    }
-
-    match sha256_file(destination_path) {
-        Ok(digest) if digest == expected_digest => Ok(()),
-        Ok(_) => Err(cleanup_partial_output(
-            destination_path,
-            io::Error::new(io::ErrorKind::InvalidData, "copied IPA digest mismatch"),
-        )),
-        Err(error) => Err(cleanup_partial_output(destination_path, error)),
+    let staged_copy = stage_copy_for_publication(source_path, destination_path, expected_digest)?;
+    match staged_copy.persist_noclobber(destination_path) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(cleanup_temporary_copy(error.file, error.error)),
     }
 }
 
-fn cleanup_partial_output(path: &Path, error: io::Error) -> io::Error {
-    match fs::remove_file(path) {
+fn stage_copy_for_publication(
+    source_path: &Path,
+    destination_path: &Path,
+    expected_digest: &str,
+) -> io::Result<tempfile::NamedTempFile> {
+    let mut source = File::open(source_path)?;
+    let parent = destination_path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "published IPA path has no parent directory",
+        )
+    })?;
+    let mut staged_copy = tempfile::Builder::new()
+        .prefix(".uyouplus-publish-")
+        .suffix(".tmp")
+        .tempfile_in(parent)?;
+    let copy_result = io::copy(&mut source, staged_copy.as_file_mut())
+        .and_then(|_| staged_copy.as_file().sync_all());
+    if let Err(error) = copy_result {
+        return Err(cleanup_temporary_copy(staged_copy, error));
+    }
+
+    match sha256_file(staged_copy.path()) {
+        Ok(digest) if digest == expected_digest => Ok(staged_copy),
+        Ok(_) => Err(cleanup_temporary_copy(
+            staged_copy,
+            io::Error::new(io::ErrorKind::InvalidData, "copied IPA digest mismatch"),
+        )),
+        Err(error) => Err(cleanup_temporary_copy(staged_copy, error)),
+    }
+}
+
+fn cleanup_temporary_copy(staged_copy: tempfile::NamedTempFile, error: io::Error) -> io::Error {
+    let path = staged_copy.path().to_owned();
+    match staged_copy.close() {
         Ok(()) => error,
         Err(cleanup_error) if cleanup_error.kind() == io::ErrorKind::NotFound => error,
         Err(cleanup_error) => io::Error::new(
-            error.kind(),
+            io::ErrorKind::Other,
             format!(
-                "{error}; cannot remove partial published IPA {}: {cleanup_error}",
+                "{error}; cannot remove temporary IPA copy {}: {cleanup_error}",
                 path.display()
             ),
         ),
@@ -382,6 +401,41 @@ mod tests {
         copy_publish_without_overwrite(&source, &destination, &expected_digest).unwrap();
 
         assert_eq!(fs::read(destination).unwrap(), b"synthetic IPA bytes");
+    }
+
+    #[test]
+    fn fallback_copy_is_staged_before_its_ipa_name_is_published() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("staged.ipa");
+        let destination = temp.path().join("published.ipa");
+        fs::write(&source, b"synthetic IPA bytes").unwrap();
+        let expected_digest = sha256_file(&source).unwrap();
+
+        let staged = stage_copy_for_publication(&source, &destination, &expected_digest).unwrap();
+
+        assert!(!destination.exists());
+        assert_ne!(staged.path().extension(), Some(std::ffi::OsStr::new("ipa")));
+        assert_eq!(fs::read(staged.path()).unwrap(), b"synthetic IPA bytes");
+
+        staged.persist_noclobber(&destination).unwrap();
+
+        assert_eq!(fs::read(destination).unwrap(), b"synthetic IPA bytes");
+    }
+
+    #[test]
+    fn fallback_copy_removes_unverified_staging_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("staged.ipa");
+        let destination = temp.path().join("published.ipa");
+        fs::write(&source, b"synthetic IPA bytes").unwrap();
+
+        let error =
+            stage_copy_for_publication(&source, &destination, "incorrect digest").unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!destination.exists());
+        let entries = fs::read_dir(temp.path()).unwrap().count();
+        assert_eq!(entries, 1, "only the source IPA should remain");
     }
 
     #[test]
