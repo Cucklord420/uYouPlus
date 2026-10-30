@@ -1,9 +1,11 @@
 #![cfg(unix)]
 
+#[cfg(not(target_os = "macos"))]
+use std::os::unix::ffi::OsStringExt;
 use std::{
     ffi::OsString,
     fs,
-    os::unix::ffi::{OsStrExt, OsStringExt},
+    os::unix::ffi::OsStrExt,
     path::Path,
     process::{Command, Output},
 };

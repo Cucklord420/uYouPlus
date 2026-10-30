@@ -552,10 +552,110 @@ fn download_ipa(url: &str, url_environment: &str, path: &Path) -> Result<(), Str
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SpacePool {
+    may_be_shared: bool,
+    // Native APFS container BSD disk number; valid for this short-lived process.
+    // None for an APFS pool whose container identity could not be established.
+    container: Option<u64>,
+}
+
+impl SpacePool {
+    fn independent() -> Self {
+        Self {
+            may_be_shared: false,
+            container: None,
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn apfs_pool_from_info(bytes: &[u8]) -> SpacePool {
+    let container = plist::Value::from_reader(io::Cursor::new(bytes))
+        .ok()
+        .and_then(|info| {
+            let reference = info
+                .as_dictionary()?
+                .get("APFSContainerReference")?
+                .as_string()?;
+            let number = reference.strip_prefix("disk")?;
+            if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            number.parse().ok()
+        });
+    SpacePool {
+        may_be_shared: true,
+        container,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn filesystem_pool(path: &std::ffi::CStr, volume: u64) -> Result<SpacePool, String> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::{Mutex, OnceLock};
+
+    // Cache only identity, never free bytes. Live statvfs queries still run for
+    // every checked write; diskutil is not invoked for each stream chunk.
+    static POOLS: OnceLock<Mutex<HashMap<u64, SpacePool>>> = OnceLock::new();
+    let mut pools = POOLS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "Unable to inspect filesystem space-pool identity")?;
+    if let Some(pool) = pools.get(&volume) {
+        return Ok(*pool);
+    }
+    let mut native = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: path is NUL-terminated and native points to writable statfs storage.
+    if unsafe { libc::statfs(path.as_ptr(), native.as_mut_ptr()) } != 0 {
+        return Err("Unable to inspect filesystem space-pool identity".into());
+    }
+    // SAFETY: successful statfs initialized native.
+    let native = unsafe { native.assume_init() };
+    let fs_type: Vec<u8> = native
+        .f_fstypename
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect();
+    let pool = if fs_type == b"apfs" {
+        let mount: Vec<u8> = native
+            .f_mntonname
+            .iter()
+            .take_while(|byte| **byte != 0)
+            .map(|byte| *byte as u8)
+            .collect();
+        Command::new("/usr/sbin/diskutil")
+            .args(["info", "-plist"])
+            .arg(std::ffi::OsStr::from_bytes(&mount))
+            .env_clear()
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| apfs_pool_from_info(&output.stdout))
+            .unwrap_or(SpacePool {
+                may_be_shared: true,
+                container: None,
+            })
+    } else {
+        SpacePool::independent()
+    };
+    pools.insert(volume, pool);
+    Ok(pool)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn filesystem_pool(_path: &std::ffi::CStr, _volume: u64) -> Result<SpacePool, String> {
+    Ok(SpacePool::independent())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DiskSpace {
     volume: u64,
     free_bytes: u64,
     allocation_unit: u64,
+    pool: SpacePool,
 }
 
 #[cfg(unix)]
@@ -592,6 +692,7 @@ fn filesystem_space(path: &Path) -> Result<DiskSpace, String> {
         volume: metadata.dev(),
         free_bytes,
         allocation_unit: block_size as u64,
+        pool: filesystem_pool(&c_path, metadata.dev())?,
     })
 }
 
@@ -607,7 +708,15 @@ fn ensure_preflight_space(
 ) -> Result<(), String> {
     let staging_estimate = footprint.allocation_estimate(staging.allocation_unit)?;
     let payload_estimate = footprint.allocation_estimate(payload.allocation_unit)?;
-    if staging.volume == payload.volume {
+    let shared_pool = staging.pool.may_be_shared
+        && payload.pool.may_be_shared
+        && match (staging.pool.container, payload.pool.container) {
+            (Some(first), Some(second)) => first == second,
+            // Unknown APFS identities may share a container. Combining estimates
+            // is the safe fallback; distinct known containers remain independent.
+            _ => true,
+        };
+    if staging.volume == payload.volume || shared_pool {
         let both_copies_with_reserve = staging_estimate
             .checked_add(payload_estimate)
             .and_then(|size| size.checked_add(DISK_RESERVE_BYTES))
@@ -929,14 +1038,12 @@ where
         footprint.logical_bytes,
         &mut space_for_path,
     ) {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(error);
+        return Err(cleanup_owned_outputs(error, &[&staging]));
     }
 
     let staged_app = staging.join("Payload/YouTube.app");
     if let Err(error) = checked_new_directory(&payload, &mut space_for_path) {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(error);
+        return Err(cleanup_owned_outputs(error, &[&staging]));
     }
     let promoted = copy_app_directory(
         &staged_app,
@@ -946,11 +1053,23 @@ where
     .and_then(|_| check_live_reserve(staging_parent, 0, &mut space_for_path))
     .and_then(|_| check_live_reserve(payload_parent, 0, &mut space_for_path));
     if let Err(error) = promoted {
-        let _ = fs::remove_dir_all(&payload);
-        let _ = fs::remove_dir_all(&staging);
-        return Err(error);
+        return Err(cleanup_owned_outputs(error, &[&payload, &staging]));
     }
     Ok(version)
+}
+
+fn cleanup_owned_outputs(mut error: String, paths: &[&Path]) -> String {
+    for path in paths {
+        if let Err(cleanup) = fs::remove_dir_all(path) {
+            if cleanup.kind() != io::ErrorKind::NotFound {
+                error.push_str(&format!(
+                    "; cleanup failed for {}: {cleanup} (owned output may remain)",
+                    path.display()
+                ));
+            }
+        }
+    }
+    error
 }
 
 fn download_cli(args: impl Iterator<Item = String>) -> Result<(), String> {
@@ -1480,11 +1599,13 @@ mod tests {
             &app_size,
             DiskSpace {
                 volume: 7,
+                pool: SpacePool::independent(),
                 allocation_unit: 4096,
                 free_bytes: same_volume_required
             },
             DiskSpace {
                 volume: 7,
+                pool: SpacePool::independent(),
                 allocation_unit: 4096,
                 free_bytes: same_volume_required
             },
@@ -1494,11 +1615,13 @@ mod tests {
             &app_size,
             DiskSpace {
                 volume: 7,
+                pool: SpacePool::independent(),
                 allocation_unit: 4096,
                 free_bytes: same_volume_required - 1
             },
             DiskSpace {
                 volume: 7,
+                pool: SpacePool::independent(),
                 allocation_unit: 4096,
                 free_bytes: same_volume_required - 1
             },
@@ -1510,11 +1633,13 @@ mod tests {
             &app_size,
             DiskSpace {
                 volume: 7,
+                pool: SpacePool::independent(),
                 allocation_unit: 4096,
                 free_bytes: separate_volume_required
             },
             DiskSpace {
                 volume: 9,
+                pool: SpacePool::independent(),
                 allocation_unit: 4096,
                 free_bytes: separate_volume_required
             },
@@ -1524,11 +1649,13 @@ mod tests {
             &app_size,
             DiskSpace {
                 volume: 7,
+                pool: SpacePool::independent(),
                 allocation_unit: 4096,
                 free_bytes: separate_volume_required
             },
             DiskSpace {
                 volume: 9,
+                pool: SpacePool::independent(),
                 allocation_unit: 4096,
                 free_bytes: separate_volume_required - 1
             },
@@ -1565,6 +1692,7 @@ mod tests {
         assert_eq!(app_size.file_sizes.len(), 7_801);
         let space = DiskSpace {
             volume: 7,
+            pool: SpacePool::independent(),
             allocation_unit: 4096,
             free_bytes: 5 * BYTES_PER_GIB,
         };
@@ -1580,6 +1708,7 @@ mod tests {
         let (_, _, app_size) = verified_archive(&temp.path().join("fixture.ipa"), &sha).unwrap();
         let space = DiskSpace {
             volume: 7,
+            pool: SpacePool::independent(),
             allocation_unit: 4096,
             free_bytes: DISK_RESERVE_BYTES + 4096,
         };
@@ -1602,6 +1731,7 @@ mod tests {
             |_| {
                 Ok(DiskSpace {
                     volume: 7,
+                    pool: SpacePool::independent(),
                     allocation_unit: 4096,
                     free_bytes: if staging.exists() {
                         DISK_RESERVE_BYTES
@@ -1632,6 +1762,7 @@ mod tests {
             |_| {
                 Ok(DiskSpace {
                     volume: 7,
+                    pool: SpacePool::independent(),
                     allocation_unit: 4096,
                     free_bytes: if payload.exists() {
                         DISK_RESERVE_BYTES
@@ -1666,6 +1797,7 @@ mod tests {
                     fs::metadata(&streamed_file).is_ok_and(|metadata| metadata.len() >= 64 * 1024);
                 Ok(DiskSpace {
                     volume: 7,
+                    pool: SpacePool::independent(),
                     allocation_unit: 4096,
                     free_bytes: if pressure {
                         DISK_RESERVE_BYTES
@@ -1692,11 +1824,13 @@ mod tests {
         };
         let staging = DiskSpace {
             volume: 7,
+            pool: SpacePool::independent(),
             free_bytes: DISK_RESERVE_BYTES + 32_768,
             allocation_unit: 4096,
         };
         let payload = DiskSpace {
             volume: 9,
+            pool: SpacePool::independent(),
             free_bytes: DISK_RESERVE_BYTES + 65_536,
             allocation_unit: 8192,
         };
@@ -1767,6 +1901,10 @@ mod tests {
         };
         let staging = DiskSpace {
             volume: 7,
+            pool: SpacePool {
+                may_be_shared: true,
+                container: Some(17),
+            },
             free_bytes: 11 * BYTES_PER_GIB / 2,
             allocation_unit: 4096,
         };
@@ -1778,6 +1916,71 @@ mod tests {
             ensure_preflight_space(&footprint, staging, payload).is_err(),
             "different APFS volume IDs must not double-count one shared free-space pool"
         );
+        let independent_payload = DiskSpace {
+            pool: SpacePool {
+                container: Some(18),
+                ..staging.pool
+            },
+            ..payload
+        };
+        assert!(
+            ensure_preflight_space(&footprint, staging, independent_payload).is_ok(),
+            "different identified containers can each fit one copy"
+        );
+        let unknown_payload = DiskSpace {
+            pool: SpacePool {
+                container: None,
+                ..staging.pool
+            },
+            ..payload
+        };
+        assert!(
+            ensure_preflight_space(&footprint, staging, unknown_payload).is_err(),
+            "unidentified APFS pools need conservative combined budgeting"
+        );
+    }
+
+    #[test]
+    fn native_apfs_identity_parser_rejects_missing_or_malformed_container_references() {
+        let known = br#"<?xml version="1.0"?><plist version="1.0"><dict><key>APFSContainerReference</key><string>disk17</string></dict></plist>"#;
+        assert_eq!(
+            apfs_pool_from_info(known),
+            SpacePool {
+                may_be_shared: true,
+                container: Some(17)
+            }
+        );
+        for bytes in [b"not a plist".as_slice(), br#"<?xml version="1.0"?><plist version="1.0"><dict/></plist>"#,
+            br#"<?xml version="1.0"?><plist version="1.0"><dict><key>APFSContainerReference</key><string>disk17s1</string></dict></plist>"#] {
+            assert_eq!(apfs_pool_from_info(bytes), SpacePool { may_be_shared: true, container: None });
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn records_native_macos_space_pool_detection() {
+        let temp = tempfile::tempdir().unwrap();
+        let space = filesystem_space(temp.path()).unwrap();
+        println!("macOS native free-space pool: {:?}", space.pool);
+        assert!(space.allocation_unit > 0);
+    }
+
+    #[test]
+    fn cleanup_reports_each_failed_path_and_keeps_the_original_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        let absent = temp.path().join("absent");
+        // remove_dir_all must refuse regular files; both failures must be reported.
+        fs::write(&first, b"first").unwrap();
+        fs::write(&second, b"second").unwrap();
+        let error =
+            cleanup_owned_outputs("original build failure".into(), &[&first, &second, &absent]);
+        assert!(error.starts_with("original build failure"));
+        assert_eq!(error.matches("cleanup failed").count(), 2);
+        assert!(error.contains(&first.display().to_string()));
+        assert!(error.contains(&second.display().to_string()));
+        assert!(!error.contains(&absent.display().to_string()));
     }
 
     #[cfg(unix)]
@@ -1799,6 +2002,7 @@ mod tests {
                 }
                 Ok(DiskSpace {
                     volume: 7,
+                    pool: SpacePool::independent(),
                     free_bytes: 100 * BYTES_PER_GIB,
                     allocation_unit: 4096,
                 })
@@ -1834,6 +2038,7 @@ mod tests {
         let result = prepare_with_space_provider(&ipa, &sha, &staging, &payload, |_| {
             Ok(DiskSpace {
                 volume: 1,
+                pool: SpacePool::independent(),
                 allocation_unit: 4096,
                 free_bytes: DISK_RESERVE_BYTES,
             })
