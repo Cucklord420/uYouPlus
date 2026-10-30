@@ -1403,6 +1403,97 @@ mod tests {
     }
 
     #[test]
+    fn low_space_during_directory_creation_cleans_owned_outputs() {
+        let (temp, sha) = fixture(&[]);
+        let staging = temp.path().join("staging");
+        let payload = temp.path().join("Payload");
+        let result = prepare_with_space_provider(
+            &temp.path().join("fixture.ipa"),
+            &sha,
+            &staging,
+            &payload,
+            |_| {
+                Ok(DiskSpace {
+                    volume: 7,
+                    free_bytes: if staging.exists() {
+                        DISK_RESERVE_BYTES
+                    } else {
+                        100 * BYTES_PER_GIB
+                    },
+                })
+            },
+        );
+        assert!(
+            result.is_err(),
+            "space must be checked again after staging is created"
+        );
+        assert!(!staging.exists());
+        assert!(!payload.exists());
+    }
+
+    #[test]
+    fn low_space_during_promotion_cleans_both_owned_outputs() {
+        let (temp, sha) = fixture(&[]);
+        let staging = temp.path().join("staging");
+        let payload = temp.path().join("Payload");
+        let result = prepare_with_space_provider(
+            &temp.path().join("fixture.ipa"),
+            &sha,
+            &staging,
+            &payload,
+            |_| {
+                Ok(DiskSpace {
+                    volume: 7,
+                    free_bytes: if payload.exists() {
+                        DISK_RESERVE_BYTES
+                    } else {
+                        100 * BYTES_PER_GIB
+                    },
+                })
+            },
+        );
+        assert!(
+            result.is_err(),
+            "promotion must not rely on the earlier space snapshot"
+        );
+        assert!(!staging.exists());
+        assert!(!payload.exists());
+    }
+
+    #[test]
+    fn low_space_during_a_file_stream_stops_and_cleans_extraction() {
+        let contents = vec![b'x'; 192 * 1024];
+        let (temp, sha) = fixture(&[("Payload/YouTube.app/data", &contents)]);
+        let staging = temp.path().join("staging");
+        let payload = temp.path().join("Payload");
+        let streamed_file = staging.join("Payload/YouTube.app/data");
+        let result = prepare_with_space_provider(
+            &temp.path().join("fixture.ipa"),
+            &sha,
+            &staging,
+            &payload,
+            |_| {
+                let pressure =
+                    fs::metadata(&streamed_file).is_ok_and(|metadata| metadata.len() >= 64 * 1024);
+                Ok(DiskSpace {
+                    volume: 7,
+                    free_bytes: if pressure {
+                        DISK_RESERVE_BYTES
+                    } else {
+                        100 * BYTES_PER_GIB
+                    },
+                })
+            },
+        );
+        assert!(
+            result.is_err(),
+            "a file stream must recheck the live reserve between chunks"
+        );
+        assert!(!staging.exists());
+        assert!(!payload.exists());
+    }
+
+    #[test]
     fn insufficient_space_fails_before_creating_staging_or_payload() {
         let (temp, sha) = fixture(&[("Payload/YouTube.app/file", b"synthetic app data")]);
         let ipa = temp.path().join("fixture.ipa");
