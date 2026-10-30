@@ -362,7 +362,7 @@ impl Downloader for CurlDownloader {
                     );
                 }
                 Err(CurlAttemptFailure::Retryable { message, .. })
-                | CurlAttemptFailure::Fatal(message) => {
+                | Err(CurlAttemptFailure::Fatal(message)) => {
                     return Err(message);
                 }
             }
