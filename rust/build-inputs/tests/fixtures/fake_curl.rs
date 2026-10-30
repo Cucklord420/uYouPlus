@@ -45,7 +45,7 @@ fn main() {
     let supported_write_out = has_pair(
         &args,
         "--write-out",
-        "%{stderr}__UYOU_HTTP_STATUS__%{http_code}\n__UYOU_RETRY_AFTER__%header{retry-after}\n",
+        "%{stderr}__UYOU_HTTP_STATUS__%{http_code}\\n__UYOU_RETRY_AFTER__%header{retry-after}\\n",
     );
     if !["--fail", "--location", "--silent", "--show-error"]
         .iter()
