@@ -19,11 +19,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run 37 offline input and workflow security regressions
-        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
-
-      - name: Rust input validation and original Python differential tests
-        run: cargo test --manifest-path rust/build-inputs/Cargo.toml
+      - name: Run Rust input, IPA, and workflow security regressions
+        run: cargo test --manifest-path rust/build-inputs/Cargo.toml --locked
       - name: Check Rust formatting
         run: cargo fmt --manifest-path rust/build-inputs/Cargo.toml -- --check
       - name: Check Rust Clippy warnings
@@ -43,6 +40,17 @@ jobs:
           git config -f .gitmodules --get-regexp '^submodule\..*\.url$' > /dev/null
           echo 'Source layout, shell syntax, and submodule manifest validated.'
 
+  macos-path-semantics:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Run Rust regressions and record macOS filesystem alias behavior
+        run: cargo test --manifest-path rust/build-inputs/Cargo.toml --locked -- --nocapture
+
   macos-app-discovery:
     runs-on: macos-15
     timeout-minutes: 10
@@ -56,4 +64,4 @@ jobs:
           /bin/bash --version | head -n 1
           /usr/bin/find . -maxdepth 1 -print0 > /dev/null
       - name: Run synthetic app discovery cases on system Bash
-        run: cargo test --manifest-path rust/build-inputs/Cargo.toml --test build_sh_autodetect
+        run: cargo test --manifest-path rust/build-inputs/Cargo.toml --locked --test build_sh_autodetect
