@@ -497,6 +497,7 @@ fn ensure_failed_download_never_publishes_partial_bytes() {
     fs::write(&source, SYNTHETIC_AR).unwrap();
     let fake_bin = directory.path().join("fake-bin");
     compile_fake_curl(&fake_bin);
+    let attempts = directory.path().join("curl-attempts");
 
     let output = tool()
         .args(["ensure", "--build-dir"])
@@ -510,10 +511,12 @@ fn ensure_failed_download_never_publishes_partial_bytes() {
         .env("PATH", path_with(&fake_bin))
         .env("SYNTHETIC_DEB", &source)
         .env("SYNTHETIC_CURL_FAILURE", "1")
+        .env("SYNTHETIC_CURL_ATTEMPT_MARKER", &attempts)
         .output()
         .expect("run uyou-deb ensure");
 
     assert!(!output.status.success(), "failed transfer was accepted");
+    assert_eq!(fs::read_to_string(attempts).unwrap(), "3");
     assert!(!package_path(directory.path(), VALID_VERSION).exists());
     assert_eq!(
         fs::read_dir(directory.path())

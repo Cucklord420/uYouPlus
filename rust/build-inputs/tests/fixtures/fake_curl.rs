@@ -42,6 +42,15 @@ fn main() {
         std::fs::copy(source, destination).expect("publish synthetic competing cache");
     }
     if env::var_os("SYNTHETIC_CURL_FAILURE").is_some() {
+        if let Some(marker) = env::var_os("SYNTHETIC_CURL_ATTEMPT_MARKER") {
+            let previous = fs::read_to_string(&marker)
+                .ok()
+                .and_then(|value| value.parse::<u8>().ok())
+                .unwrap_or(0);
+            fs::write(marker, (previous + 1).to_string())
+                .expect("write synthetic attempt count");
+        }
+        eprintln!("__UYOU_HTTP_STATUS__503");
         io::stdout()
             .write_all(b"HTTP 503 synthetic error response")
             .expect("write simulated error body");
