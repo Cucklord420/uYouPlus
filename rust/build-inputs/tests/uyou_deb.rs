@@ -448,6 +448,45 @@ fn ensure_honors_retry_after_before_retrying() {
 }
 
 #[test]
+fn ensure_rejects_curl_older_than_header_capture_before_downloading() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("fictional-source.deb");
+    fs::write(&source, SYNTHETIC_AR).unwrap();
+    let fake_bin = directory.path().join("fake-bin");
+    compile_fake_curl(&fake_bin);
+    let attempts = directory.path().join("curl-attempts");
+
+    let output = tool()
+        .args(["ensure", "--build-dir"])
+        .arg(directory.path())
+        .args([
+            "--version",
+            VALID_VERSION,
+            "--sha256",
+            &digest(SYNTHETIC_AR),
+        ])
+        .env("PATH", path_with(&fake_bin))
+        .env("SYNTHETIC_DEB", &source)
+        .env("SYNTHETIC_CURL_VERSION", "7.83.1")
+        .env("SYNTHETIC_CURL_FAILURE", "1")
+        .env("SYNTHETIC_CURL_ATTEMPT_MARKER", &attempts)
+        .output()
+        .expect("run uyou-deb ensure");
+
+    assert!(!output.status.success(), "accepted unsupported curl");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("curl 7.84.0 or later is required"),
+        "old curl failed for an unexpected reason: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !attempts.exists(),
+        "started a network download before checking curl capability"
+    );
+    assert!(!package_path(directory.path(), VALID_VERSION).exists());
+}
+
+#[test]
 fn ensure_rejects_a_download_with_the_wrong_digest_and_leaves_no_file() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("fictional-source.deb");
