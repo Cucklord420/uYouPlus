@@ -307,6 +307,8 @@ fn stage_copy_for_publication(
     expected_digest: &str,
 ) -> io::Result<tempfile::NamedTempFile> {
     let mut source = File::open(source_path)?;
+    #[cfg(unix)]
+    let source_permissions = source.metadata()?.permissions();
     let parent = destination_path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -324,7 +326,16 @@ fn stage_copy_for_publication(
     }
 
     match sha256_file(staged_copy.path()) {
-        Ok(digest) if digest == expected_digest => Ok(staged_copy),
+        Ok(digest) if digest == expected_digest => {
+            #[cfg(unix)]
+            if let Err(error) = staged_copy.as_file().set_permissions(source_permissions) {
+                return Err(cleanup_temporary_copy(staged_copy, error));
+            }
+            if let Err(error) = staged_copy.as_file().sync_all() {
+                return Err(cleanup_temporary_copy(staged_copy, error));
+            }
+            Ok(staged_copy)
+        }
         Ok(_) => Err(cleanup_temporary_copy(
             staged_copy,
             io::Error::new(io::ErrorKind::InvalidData, "copied IPA digest mismatch"),
@@ -436,6 +447,24 @@ mod tests {
         assert!(!destination.exists());
         let entries = fs::read_dir(temp.path()).unwrap().count();
         assert_eq!(entries, 1, "only the source IPA should remain");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fallback_publication_preserves_source_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("staged.ipa");
+        let destination = temp.path().join("published.ipa");
+        fs::write(&source, b"synthetic IPA bytes").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o640)).unwrap();
+        let expected_digest = sha256_file(&source).unwrap();
+
+        copy_publish_without_overwrite(&source, &destination, &expected_digest).unwrap();
+
+        let published_mode = fs::metadata(destination).unwrap().permissions().mode() & 0o777;
+        assert_eq!(published_mode, 0o640);
     }
 
     #[test]
