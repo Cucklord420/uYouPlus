@@ -42,12 +42,11 @@ fn main() {
         ("--max-filesize", "536870912"),
         ("--output", "-"),
     ];
-    let supported_write_out = [
-        "%{stderr}__UYOU_HTTP_STATUS__%{http_code}\n",
+    let supported_write_out = has_pair(
+        &args,
+        "--write-out",
         "%{stderr}__UYOU_HTTP_STATUS__%{http_code}\n__UYOU_RETRY_AFTER__%header{retry-after}\n",
-    ]
-    .iter()
-    .any(|value| has_pair(&args, "--write-out", value));
+    );
     if !["--fail", "--location", "--silent", "--show-error"]
         .iter()
         .all(|flag| args.iter().any(|arg| arg == flag))

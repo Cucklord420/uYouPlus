@@ -36,7 +36,9 @@ The guard and digest validation apply only when `JAILBROKEN` is not `1`. The exi
 
 Update `docs/UYOU_PACKAGE_INTEGRITY.md` to document the Rust entry points, the local version default and shared-environment invocation, while retaining the independent-digest warning. Existing Python tests for the pre-existing IPA-input behavior remain in place; the new Python uYou scripts and three uYou-specific Python test modules will be removed only after their behavior is covered by Rust tests.
 
-The existing crate uses edition 2021, has no `rust-toolchain.toml`, and has no `Cargo.lock` on the reviewed branch. The port reuses the existing dependencies and adds no dependency or lockfile.
+The existing crate uses edition 2021, has no `rust-toolchain.toml`, and has no `Cargo.lock` on the reviewed branch. The retry correction below adds the small Rust `httpdate` dependency to parse the standard HTTP date forms; it adds no lockfile.
+
+**Retry-After preservation correction (2026-10-30).** Independent review found that replacing curl's built-in retries with Rust-owned retries also stopped honoring the server's `Retry-After` header. The Rust downloader now captures that header with curl's `%header{retry-after}` write-out variable (curl 7.84.0 or later), accepts delta-seconds and HTTP-date values through `httpdate`, waits up to a 600-second per-response limit, and fails rather than retrying early when a valid requested delay exceeds that limit. Missing or malformed values retain the 1-second then 2-second fallback. Curl stderr is drained fully while only a bounded prefix and tail are retained, so long diagnostics cannot block the transfer and final markers remain available. An offline fixture regression verifies the server's two-second delay and succeeds on attempt two.
 
 ## Regression coverage to preserve in Rust
 
@@ -46,14 +48,14 @@ Rust unit and integration tests will cover:
 - In a non-jailbroken Make invocation, a value such as `UYOU_VERSION='$(shell touch marker)'` is rejected by the top-of-file guard before Make evaluates it; the marker remains absent. Verify the workflow preflight precedes the marker-setting Make call and the local two-step command is documented with the same `UYOU_VERSION` for both steps.
 - The jailbroken `before-package` path still works without `UYOU_DEB_INPUTS_VALIDATED` or `UYOU_DEB_SHA256`, and does not fetch or extract a `.deb`.
 - Shell metacharacters and command-substitution-looking version values are treated only as data by Rust and rejected before path construction or downloader invocation.
-- Rejection of HTTP error bodies and failed downloads; no partial cache publication or leftover temporary file.
+- Rejection of HTTP error bodies and failed downloads; no partial cache publication or leftover temporary file. Regression coverage verifies reset of partial-response bytes, transient 503 retries, and honoring a two-second `Retry-After` response.
 - A digest-matching synthetic download is verified before cache promotion and extraction.
 - Synthetic `.deb` construction with `dpkg-deb` (when available), including required files, missing-payload rejection when old files exist, successful replacement of stale extras, and failure preservation of the previous payload.
 - An injected failure at the new-`Library` promotion step restores the prior backed-up `Library` tree.
 - Rust tests inspect the workflow, local build instructions, and Makefile to ensure the guard precedes any version reference and Theos include for non-jailbroken builds, workflow validation precedes Make, Make delegates to the Rust binary, local instructions validate before Make with the same version/default, validation precedes package consumption, and no unvalidated version is expanded into a shell path.
 - A no-clobber cache-promotion regression for a destination that appears during download.
 
-Network behavior will be tested offline through Rust-injected command execution, not through a shell or Python fake executable. Synthetic fixtures will contain fictional bytes only. The Debian integration test may skip on a runner without `dpkg-deb`; the dedicated Ubuntu extraction workflow and macOS build runner must exercise the relevant path.
+Network behavior is tested offline through a Rust-built fake `curl` executable, not through a shell or Python fake. Synthetic fixtures contain fictional bytes only. The Debian integration test may skip on a runner without `dpkg-deb`; the dedicated Ubuntu extraction workflow and macOS build runner must exercise the relevant path.
 
 ## Alternatives considered
 

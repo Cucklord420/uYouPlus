@@ -2,6 +2,7 @@
 // Authenticate and safely extract the externally sourced uYou Debian package.
 
 use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -9,12 +10,19 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_CURL_ERROR_BYTES: u64 = 64 * 1024;
+const MAX_CURL_ERROR_PREFIX_BYTES: usize = 64 * 1024;
+const MAX_CURL_ERROR_TAIL_BYTES: usize = 128 * 1024;
 const MAX_DOWNLOAD_ATTEMPTS: usize = 3;
 const HTTP_STATUS_MARKER: &str = "__UYOU_HTTP_STATUS__";
+const RETRY_AFTER_MARKER: &str = "__UYOU_RETRY_AFTER__";
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(600);
+const CURL_WRITE_OUT: &str = concat!(
+    "%{stderr}__UYOU_HTTP_STATUS__%{http_code}\\n",
+    "__UYOU_RETRY_AFTER__%header{retry-after}\\n",
+);
 const RETRYABLE_HTTP_STATUSES: [u16; 8] = [408, 429, 500, 502, 503, 504, 522, 524];
 const AR_MAGIC: &[u8; 8] = b"!<arch>\n";
 const RELEASE_BASE: &str = "https://repo.miro92.com/debs/com.miro.uyou_";
@@ -134,15 +142,55 @@ trait Downloader {
 struct CurlDownloader;
 
 enum CurlAttemptFailure {
-    Retryable(String),
+    Retryable {
+        message: String,
+        retry_after: Option<Duration>,
+    },
     Fatal(String),
+}
+
+fn marker_value<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
+    text.lines()
+        .rev()
+        .find_map(|line| line.strip_prefix(marker))
 }
 
 fn http_status_from_curl_stderr(stderr: &[u8]) -> Option<u16> {
     let text = String::from_utf8_lossy(stderr);
-    let (_, status) = text.rsplit_once(HTTP_STATUS_MARKER)?;
+    let status = marker_value(&text, HTTP_STATUS_MARKER)?;
     let status = status.trim().parse::<u16>().ok()?;
     (100..=599).contains(&status).then_some(status)
+}
+
+fn retry_after_delay(value: &str, now: SystemTime) -> Result<Option<Duration>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+
+    let delay = if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        let seconds = value
+            .parse::<u64>()
+            .map_err(|_| "server Retry-After exceeds the 600-second retry limit")?;
+        Duration::from_secs(seconds)
+    } else if let Ok(date) = httpdate::parse_http_date(value) {
+        date.duration_since(now).unwrap_or_default()
+    } else {
+        return Ok(None);
+    };
+
+    if delay > MAX_RETRY_AFTER {
+        return Err("server Retry-After exceeds the 600-second retry limit".into());
+    }
+    Ok(Some(delay))
+}
+
+fn retry_after_from_curl_stderr(stderr: &[u8], now: SystemTime) -> Result<Option<Duration>> {
+    let text = String::from_utf8_lossy(stderr);
+    let Some(value) = marker_value(&text, RETRY_AFTER_MARKER) else {
+        return Ok(None);
+    };
+    retry_after_delay(value, now)
 }
 
 fn curl_error_detail(stderr: &[u8]) -> String {
@@ -152,6 +200,38 @@ fn curl_error_detail(stderr: &[u8]) -> String {
         .unwrap_or_default()
         .trim()
         .to_string()
+}
+
+fn capture_curl_stderr(mut reader: impl Read) -> io::Result<Vec<u8>> {
+    let mut prefix = Vec::with_capacity(MAX_CURL_ERROR_PREFIX_BYTES);
+    let mut tail = VecDeque::with_capacity(MAX_CURL_ERROR_TAIL_BYTES);
+    let mut total_bytes = 0usize;
+    let mut buffer = [0u8; 8192];
+
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        total_bytes = total_bytes.saturating_add(count);
+        let chunk = &buffer[..count];
+
+        let prefix_remaining = MAX_CURL_ERROR_PREFIX_BYTES.saturating_sub(prefix.len());
+        prefix.extend_from_slice(&chunk[..count.min(prefix_remaining)]);
+        tail.extend(chunk.iter().copied());
+        while tail.len() > MAX_CURL_ERROR_TAIL_BYTES {
+            tail.pop_front();
+        }
+    }
+
+    if total_bytes <= MAX_CURL_ERROR_PREFIX_BYTES {
+        return Ok(prefix);
+    }
+
+    let mut captured = prefix;
+    captured.extend_from_slice(b"\n...[curl stderr truncated]...\n");
+    captured.extend(tail);
+    Ok(captured)
 }
 
 impl CurlDownloader {
@@ -181,7 +261,7 @@ impl CurlDownloader {
                 "--output",
                 "-",
                 "--write-out",
-                "%{stderr}__UYOU_HTTP_STATUS__%{http_code}\n",
+                CURL_WRITE_OUT,
             ])
             .arg(url)
             .stdin(Stdio::null())
@@ -198,11 +278,7 @@ impl CurlDownloader {
             CurlAttemptFailure::Fatal("cannot read HTTPS download diagnostics".into())
         })?;
         let stderr_reader = thread::spawn(move || {
-            let mut limited = stderr.take(MAX_CURL_ERROR_BYTES + 1);
-            let mut bytes = Vec::new();
-            let _ = limited.read_to_end(&mut bytes);
-            bytes.truncate(MAX_CURL_ERROR_BYTES as usize);
-            bytes
+            capture_curl_stderr(stderr)
         });
 
         let mut limited = stdout.take(MAX_PACKAGE_BYTES + 1);
@@ -224,7 +300,11 @@ impl CurlDownloader {
         let status = child.wait().map_err(|error| {
             CurlAttemptFailure::Fatal(format!("cannot wait for HTTPS package download: {error}"))
         })?;
-        let stderr = stderr_reader.join().unwrap_or_default();
+        let stderr = stderr_reader
+            .join()
+            .ok()
+            .and_then(std::result::Result::ok)
+            .unwrap_or_default();
         if copied > MAX_PACKAGE_BYTES {
             return Err(CurlAttemptFailure::Fatal(
                 "uYou package exceeds the 512 MiB size limit".into(),
@@ -238,14 +318,21 @@ impl CurlDownloader {
             } else {
                 format!("HTTPS package download failed: {detail}")
             };
-            let retryable = status.code() == Some(28)
-                || (status.code() == Some(22)
-                    && http_status.is_some_and(|code| RETRYABLE_HTTP_STATUSES.contains(&code)));
-            return Err(if retryable {
-                CurlAttemptFailure::Retryable(message)
-            } else {
-                CurlAttemptFailure::Fatal(message)
-            });
+            let retryable_http = status.code() == Some(22)
+                && http_status.is_some_and(|code| RETRYABLE_HTTP_STATUSES.contains(&code));
+            if status.code() == Some(28) || retryable_http {
+                let retry_after = if retryable_http {
+                    retry_after_from_curl_stderr(&stderr, SystemTime::now())
+                        .map_err(CurlAttemptFailure::Fatal)?
+                } else {
+                    None
+                };
+                return Err(CurlAttemptFailure::Retryable {
+                    message,
+                    retry_after,
+                });
+            }
+            return Err(CurlAttemptFailure::Fatal(message));
         }
         Ok(())
     }
@@ -264,14 +351,19 @@ impl Downloader for CurlDownloader {
 
             match Self::download_attempt(url, destination) {
                 Ok(()) => return Ok(()),
-                Err(CurlAttemptFailure::Retryable(error))
-                    if attempt + 1 < MAX_DOWNLOAD_ATTEMPTS =>
+                Err(CurlAttemptFailure::Retryable {
+                    message,
+                    retry_after,
+                }) if attempt + 1 < MAX_DOWNLOAD_ATTEMPTS =>
                 {
-                    last_error = error;
-                    thread::sleep(Duration::from_secs((attempt + 1) as u64));
+                    last_error = message;
+                    thread::sleep(
+                        retry_after.unwrap_or_else(|| Duration::from_secs((attempt + 1) as u64)),
+                    );
                 }
-                Err(CurlAttemptFailure::Retryable(error) | CurlAttemptFailure::Fatal(error)) => {
-                    return Err(error);
+                Err(CurlAttemptFailure::Retryable { message, .. })
+                | CurlAttemptFailure::Fatal(message) => {
+                    return Err(message);
                 }
             }
         }
@@ -600,6 +692,58 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_after_supports_seconds_and_http_dates_with_a_bound() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        assert_eq!(
+            retry_after_delay(" 12 ", now).unwrap(),
+            Some(Duration::from_secs(12))
+        );
+
+        let future = now + Duration::from_secs(45);
+        let header_date = httpdate::fmt_http_date(future);
+        assert_eq!(
+            retry_after_delay(&header_date, now).unwrap(),
+            Some(Duration::from_secs(45))
+        );
+
+        let past = httpdate::fmt_http_date(now - Duration::from_secs(1));
+        assert_eq!(retry_after_delay(&past, now).unwrap(), Some(Duration::ZERO));
+        assert_eq!(retry_after_delay("not a date", now).unwrap(), None);
+        assert!(retry_after_delay("601", now).is_err());
+    }
+
+    #[test]
+    fn retry_after_and_http_status_markers_parse_from_curl_output() {
+        let stderr = [
+            "curl: (22) HTTP response code said error",
+            "__UYOU_HTTP_STATUS__503",
+            "__UYOU_RETRY_AFTER__2",
+        ]
+        .join("\n");
+        assert_eq!(http_status_from_curl_stderr(stderr.as_bytes()), Some(503));
+        assert_eq!(
+            retry_after_from_curl_stderr(
+                stderr.as_bytes(),
+                std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000)
+            )
+            .unwrap(),
+            Some(Duration::from_secs(2))
+        );
+    }
+
+    #[test]
+    fn curl_stderr_capture_is_bounded_and_keeps_final_retry_markers() {
+        let mut stderr = vec![b'x'; MAX_CURL_ERROR_TAIL_BYTES + 8192];
+        stderr.extend_from_slice(b"\n__UYOU_HTTP_STATUS__503\n__UYOU_RETRY_AFTER__2\n");
+        let captured = capture_curl_stderr(io::Cursor::new(stderr)).unwrap();
+
+        assert!(captured.len() <= MAX_CURL_ERROR_PREFIX_BYTES + 32 + MAX_CURL_ERROR_TAIL_BYTES);
+        assert!(String::from_utf8_lossy(&captured).ends_with(
+            "__UYOU_HTTP_STATUS__503\n__UYOU_RETRY_AFTER__2\n"
+        ));
+    }
 
     #[test]
     fn promotion_failure_restores_the_previous_library() {
