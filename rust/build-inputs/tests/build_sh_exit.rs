@@ -3,6 +3,29 @@
 // signed, or installed.
 
 #[cfg(unix)]
+fn write_test_ipa(path: &std::path::Path) {
+    use std::fs::File;
+    use std::io::Write;
+    use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+
+    let file = File::create(path).unwrap();
+    let mut writer = ZipWriter::new(file);
+    writer
+        .start_file(
+            "Payload/YouTube.app/Info.plist",
+            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+        )
+        .unwrap();
+    writer
+        .write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleVersion</key><string>19.25.4</string></dict></plist>"#,
+        )
+        .unwrap();
+    writer.finish().unwrap();
+}
+
+#[cfg(unix)]
 #[test]
 fn local_build_failure_returns_nonzero_status() {
     use std::io::Write;
@@ -10,6 +33,7 @@ fn local_build_failure_returns_nonzero_status() {
     use std::process::{Command, Stdio};
 
     let root = tempfile::tempdir().expect("temporary test directory");
+    write_test_ipa(&root.path().join("fake-input.ipa"));
     let bin = root.path().join("bin");
     std::fs::create_dir(&bin).expect("mock command directory");
 
@@ -82,6 +106,7 @@ mod output_artifact_tests {
         hash_override: Option<&str>,
     ) -> (tempfile::TempDir, bool, String, String) {
         let temp = tempfile::tempdir().unwrap();
+        super::write_test_ipa(&temp.path().join("synthetic input.ipa"));
         let bin = temp.path().join("bin");
         fs::create_dir(&bin).unwrap();
         for (path, bytes) in existing {
