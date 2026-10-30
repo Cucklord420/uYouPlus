@@ -4,7 +4,7 @@
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsString,
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
@@ -272,15 +272,61 @@ fn publish_one_ipa(
         match fs::hard_link(staged_ipa, &output_path) {
             Ok(()) => return Ok((output_path, digest)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(format!(
-                    "cannot publish IPA without replacing existing output: {error}"
-                ));
+            Err(link_error) => {
+                match copy_publish_without_overwrite(staged_ipa, &output_path, &digest) {
+                    Ok(()) => return Ok((output_path, digest)),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(copy_error) => {
+                        return Err(format!(
+                            "cannot publish IPA without replacing existing output: hard link failed: {link_error}; no-overwrite copy failed: {copy_error}"
+                        ));
+                    }
+                }
             }
         }
     }
 
     Err("cannot allocate a unique published IPA filename".to_owned())
+}
+
+fn copy_publish_without_overwrite(
+    source_path: &Path,
+    destination_path: &Path,
+    expected_digest: &str,
+) -> io::Result<()> {
+    let mut source = File::open(source_path)?;
+    let mut destination = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination_path)?;
+    let copy_result = io::copy(&mut source, &mut destination).and_then(|_| destination.sync_all());
+    drop(destination);
+    if let Err(error) = copy_result {
+        return Err(cleanup_partial_output(destination_path, error));
+    }
+
+    match sha256_file(destination_path) {
+        Ok(digest) if digest == expected_digest => Ok(()),
+        Ok(_) => Err(cleanup_partial_output(
+            destination_path,
+            io::Error::new(io::ErrorKind::InvalidData, "copied IPA digest mismatch"),
+        )),
+        Err(error) => Err(cleanup_partial_output(destination_path, error)),
+    }
+}
+
+fn cleanup_partial_output(path: &Path, error: io::Error) -> io::Error {
+    match fs::remove_file(path) {
+        Ok(()) => error,
+        Err(cleanup_error) if cleanup_error.kind() == io::ErrorKind::NotFound => error,
+        Err(cleanup_error) => io::Error::new(
+            error.kind(),
+            format!(
+                "{error}; cannot remove partial published IPA {}: {cleanup_error}",
+                path.display()
+            ),
+        ),
+    }
 }
 
 fn unique_output_name(name: &std::ffi::OsStr, attempt: u32) -> OsString {
@@ -320,3 +366,37 @@ fn open_output_directory(package_directory: &Path) {
 
 #[cfg(not(target_os = "macos"))]
 fn open_output_directory(_: &Path) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_publication_copies_to_a_new_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("staged.ipa");
+        let destination = temp.path().join("published.ipa");
+        fs::write(&source, b"synthetic IPA bytes").unwrap();
+        let expected_digest = sha256_file(&source).unwrap();
+
+        copy_publish_without_overwrite(&source, &destination, &expected_digest).unwrap();
+
+        assert_eq!(fs::read(destination).unwrap(), b"synthetic IPA bytes");
+    }
+
+    #[test]
+    fn fallback_publication_never_replaces_an_existing_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("staged.ipa");
+        let destination = temp.path().join("published.ipa");
+        fs::write(&source, b"new synthetic IPA bytes").unwrap();
+        fs::write(&destination, b"existing output").unwrap();
+        let expected_digest = sha256_file(&source).unwrap();
+
+        let error =
+            copy_publish_without_overwrite(&source, &destination, &expected_digest).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(destination).unwrap(), b"existing output");
+    }
+}

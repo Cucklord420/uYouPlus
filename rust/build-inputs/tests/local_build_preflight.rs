@@ -160,6 +160,17 @@ fn case_folded_archive_path_collision_is_rejected_before_make() {
 }
 
 #[test]
+fn final_dot_archive_component_is_rejected_before_make() {
+    let temp = tempfile::tempdir().unwrap();
+    write_ipa(
+        &temp.path().join("dot-component.ipa"),
+        &[("Payload/YouTube.app/.", b"dot component")],
+    );
+
+    assert_blocked_before_make(temp.path(), "dot-component.ipa");
+}
+
+#[test]
 fn corrupt_member_data_is_rejected_before_make() {
     let temp = tempfile::tempdir().unwrap();
     write_ipa_with_corrupt_member_data(&temp.path().join("corrupt.ipa"));

@@ -212,6 +212,7 @@ pub fn verified_archive(
             || parts[..parts.len().saturating_sub(1)]
                 .iter()
                 .any(|s| s.is_empty() || *s == "." || *s == "..")
+            || parts.contains(&".")
             || parts.contains(&"..")
             || parts.first().is_some_and(|s| s.contains(':'))
         {
