@@ -12,4 +12,4 @@ script_directory=$(CDPATH= cd -- "$script_directory" && pwd)
 if [[ -n "${UYOUPLUS_BUILD_BIN:-}" ]]; then
   exec "$UYOUPLUS_BUILD_BIN" local-build
 fi
-exec cargo run --quiet --manifest-path "$script_directory/rust/build-inputs/Cargo.toml" --bin uyouplus-inputs -- local-build
+exec cargo run --quiet --manifest-path "$script_directory/rust/build-inputs/Cargo.toml" --bin uyouplus-inputs --locked -- local-build

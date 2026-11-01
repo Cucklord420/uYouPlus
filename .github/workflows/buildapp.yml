@@ -59,7 +59,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run Rust input, IPA, and workflow security regressions
-        run: cargo test --manifest-path rust/build-inputs/Cargo.toml
+        run: cargo test --manifest-path rust/build-inputs/Cargo.toml --locked
       - name: Validate operator-supplied build settings
         env:
           IPA_URL: ${{ inputs.decrypted_youtube_url }}
@@ -68,7 +68,7 @@ jobs:
           BUNDLE_ID: ${{ inputs.bundle_id }}
           APP_NAME: ${{ inputs.app_name }}
         run: |
-          cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml -- inputs --url "$IPA_URL" --sha256 "$IPA_SHA256" --version "$UYOU_VERSION" --bundle "$BUNDLE_ID" --app "$APP_NAME"
+          cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml --locked -- inputs --url "$IPA_URL" --sha256 "$IPA_SHA256" --version "$UYOU_VERSION" --bundle "$BUNDLE_ID" --app "$APP_NAME"
 
   build:
     needs: validate-inputs
@@ -167,8 +167,8 @@ jobs:
           # Untrusted downloads and ZIP member expansion stay outside checkout.
           staging=$(mktemp -d "${RUNNER_TEMP}/youtube-ipa-XXXXXXXX")
           trap 'rm -rf -- "$staging"' EXIT
-          cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- download --url-env YOUTUBE_URL --output "$staging/YouTube.ipa"
-          youtube_version=$(cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- ipa \
+          cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa --locked -- download --url-env YOUTUBE_URL --output "$staging/YouTube.ipa"
+          youtube_version=$(cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa --locked -- ipa \
             --file "$staging/YouTube.ipa" \
             --sha256 "$IPA_SHA256" \
             --staging-dir "$staging/extracted" \

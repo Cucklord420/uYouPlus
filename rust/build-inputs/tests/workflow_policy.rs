@@ -3,6 +3,7 @@ use regex::Regex;
 const BUILD_WORKFLOW: &str = include_str!("../../../.github/workflows/buildapp.yml");
 const VALIDATION_WORKFLOW: &str = include_str!("../../../.github/workflows/validate.yml");
 const IPA_SOURCE: &str = include_str!("../src/bin/ipa.rs");
+const BUILD_SH: &str = include_str!("../../../build.sh");
 
 #[test]
 fn builder_is_manual_and_release_is_opt_in() {
@@ -96,6 +97,33 @@ fn validation_workflows_do_not_run_python() {
         assert!(workflow.contains("cargo test --manifest-path rust/build-inputs/Cargo.toml"));
     }
     assert!(!VALIDATION_WORKFLOW.contains("scripts/build_checks.py"));
+}
+
+#[test]
+fn cargo_entry_points_require_locked_dependency_resolution() {
+    let cargo_execution = Regex::new(r"\\bcargo\\s+(?:test|run|clippy)\\b").unwrap();
+    for (name, source) in [
+        ("manual build workflow", BUILD_WORKFLOW),
+        ("source validation workflow", VALIDATION_WORKFLOW),
+        ("manual build launcher", BUILD_SH),
+    ] {
+        let mut checked = 0;
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') || !cargo_execution.is_match(trimmed) {
+                continue;
+            }
+            checked += 1;
+            let start = trimmed.find("cargo ").unwrap();
+            let invocation = &trimmed[start..];
+            let cargo_options = invocation.split(" -- ").next().unwrap_or(invocation);
+            assert!(
+                cargo_options.split_ascii_whitespace().any(|arg| arg == "--locked"),
+                "{name} must use --locked: {trimmed}"
+            );
+        }
+        assert!(checked > 0, "{name} no longer has a tested Cargo entry point");
+    }
 }
 
 #[test]
