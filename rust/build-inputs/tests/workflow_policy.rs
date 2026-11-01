@@ -101,7 +101,7 @@ fn validation_workflows_do_not_run_python() {
 
 #[test]
 fn cargo_entry_points_require_locked_dependency_resolution() {
-    let cargo_execution = Regex::new(r"\\bcargo\\s+(?:test|run|clippy)\\b").unwrap();
+    let cargo_execution = Regex::new(r"\bcargo\s+(?:test|run|clippy)\b").unwrap();
     for (name, source) in [
         ("manual build workflow", BUILD_WORKFLOW),
         ("source validation workflow", VALIDATION_WORKFLOW),
