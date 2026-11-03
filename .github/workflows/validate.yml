@@ -19,7 +19,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run 37 offline input and workflow security regressions
+      - name: Run existing Python IPA and workflow regressions
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: Rust input validation and original Python differential tests

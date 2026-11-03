@@ -1,3 +1,9 @@
+ifneq ($(JAILBROKEN),1)
+ifneq ($(UYOU_DEB_INPUTS_VALIDATED),1)
+$(error Run the Rust uyou-deb validate command before invoking a non-jailbroken Make build)
+endif
+endif
+
 export TARGET = iphone:clang:latest:14.0
 export ARCHS = arm64
 
@@ -46,29 +52,20 @@ REMOVE_EXTENSIONS = 1
 CODESIGN_IPA = 0
 
 UYOU_PATH = Tweaks/uYou
-UYOU_DEB = $(UYOU_PATH)/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb
-UYOU_DYLIB = $(UYOU_PATH)/Library/MobileSubstrate/DynamicLibraries/uYou.dylib
-UYOU_BUNDLE = $(UYOU_PATH)/Library/Application\ Support/uYouBundle.bundle
+UYOU_DEB_COMMAND ?= cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb --
+
+export UYOU_VERSION
 
 internal-clean::
 	@rm -rf $(UYOU_PATH)/*
 
 ifneq ($(JAILBROKEN),1)
+# Check the operator-reviewed digest BEFORE cleaning, downloading or unpacking.
 before-all::
-	@if [[ ! -f $(UYOU_DEB) ]]; then \
-		rm -rf $(UYOU_PATH)/*; \
-		$(PRINT_FORMAT_BLUE) "Downloading uYou"; \
-	fi
+	@$(UYOU_DEB_COMMAND) ensure --build-dir "$(UYOU_PATH)" --version "$$UYOU_VERSION" --sha256 "$$UYOU_DEB_SHA256"
+
 before-all::
-	@if [[ ! -f $(UYOU_DEB) ]]; then \
- 		curl -s https://repo.miro92.com/debs/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb -o $(UYOU_DEB); \
- 	fi; \
-	if [[ ! -f $(UYOU_DYLIB) || ! -d $(UYOU_BUNDLE) ]]; then \
-		tar -xf Tweaks/uYou/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb -C Tweaks/uYou; tar -xf Tweaks/uYou/data.tar* -C Tweaks/uYou; \
-		if [[ ! -f $(UYOU_DYLIB) || ! -d $(UYOU_BUNDLE) ]]; then \
-			$(PRINT_FORMAT_ERROR) "Failed to extract uYou"; exit 1; \
-		fi; \
-	fi;
+	@$(UYOU_DEB_COMMAND) extract --build-dir "$(UYOU_PATH)" --version "$$UYOU_VERSION" --sha256 "$$UYOU_DEB_SHA256"
 else
 before-package::
 	@mkdir -p $(THEOS_STAGING_DIR)/Library/Application\ Support; cp -r Localizations/uYouPlus.bundle $(THEOS_STAGING_DIR)/Library/Application\ Support/
