@@ -251,6 +251,70 @@ mod tests {
     }
 
     #[test]
+    fn rejects_oversized_manifest_in_rust_and_original_python() {
+        let python = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/build_checks.py");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("oversized.ipa");
+        let file = File::create(&path).unwrap();
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file(
+                "Payload/YouTube.app/Info.plist",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer.write_all(&vec![b'Z'; 4 * 1024 * 1024 + 1]).unwrap();
+        writer.finish().unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let sha = format!("{:x}", Sha256::digest(&original));
+        assert_eq!(verify(&path, &sha).as_deref(), Err("Info.plist exceeds safety limit"));
+        let result = Command::new("python3")
+            .arg(&python)
+            .arg("ipa")
+            .arg("--file")
+            .arg(&path)
+            .arg("--sha256")
+            .arg(&sha)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("Info.plist exceeds safety limit"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn rejects_malformed_manifest_in_rust_and_original_python() {
+        let python = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/build_checks.py");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("malformed.ipa");
+        let file = File::create(&path).unwrap();
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file(
+                "Payload/YouTube.app/Info.plist",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer.write_all(b"<plist><dict>broken").unwrap();
+        writer.finish().unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let sha = format!("{:x}", Sha256::digest(&original));
+        assert!(verify(&path, &sha).is_err());
+        let result = Command::new("python3")
+            .arg(&python)
+            .arg("ipa")
+            .arg("--file")
+            .arg(&path)
+            .arg("--sha256")
+            .arg(&sha)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+    #[test]
     fn rejects_not_a_zip_without_touching_original() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("bad.ipa");
