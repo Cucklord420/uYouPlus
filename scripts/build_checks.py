@@ -95,7 +95,12 @@ def verify_ipa(path: Path, expected_sha256: str) -> str:
         manifest = "Payload/YouTube.app/Info.plist"
         if manifest not in seen:
             raise ValueError("Not a YouTube IPA: missing Info.plist")
-        metadata = plistlib.loads(archive.read(manifest))
+        # Limit decompressed manifest bytes before allocating or parsing its contents.
+        with archive.open(manifest) as plist_stream:
+            plist_bytes = plist_stream.read(4 * 1024 * 1024 + 1)
+        if len(plist_bytes) > 4 * 1024 * 1024:
+            raise ValueError("Info.plist exceeds safety limit")
+        metadata = plistlib.loads(plist_bytes)
         version = metadata.get("CFBundleVersion")
         if not isinstance(version, str) or not VERSION.fullmatch(version):
             raise ValueError("Invalid YouTube CFBundleVersion")
