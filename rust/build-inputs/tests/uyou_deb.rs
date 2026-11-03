@@ -447,6 +447,92 @@ fn ensure_honors_retry_after_before_retrying() {
     );
 }
 
+
+#[test]
+fn ensure_honors_http_date_retry_after_before_retrying() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("fictional-source.deb");
+    fs::write(&source, SYNTHETIC_AR).unwrap();
+    let fake_bin = directory.path().join("fake-bin");
+    compile_fake_curl(&fake_bin);
+    let attempts = directory.path().join("curl-attempts");
+    let retry_marker = directory.path().join("http-date-retry-start");
+    let header = httpdate::fmt_http_date(
+        std::time::SystemTime::now() + std::time::Duration::from_secs(4),
+    );
+
+    let started = std::time::Instant::now();
+    let output = tool()
+        .args(["ensure", "--build-dir"])
+        .arg(directory.path())
+        .args(["--version", VALID_VERSION, "--sha256", &digest(SYNTHETIC_AR)])
+        .env("PATH", path_with(&fake_bin))
+        .env("SYNTHETIC_DEB", &source)
+        .env("SYNTHETIC_CURL_RETRY_AFTER", &header)
+        .env("SYNTHETIC_CURL_ATTEMPT_MARKER", &attempts)
+        .env("SYNTHETIC_CURL_RETRY_MARKER", &retry_marker)
+        .output()
+        .expect("run uyou-deb ensure with an HTTP-date");
+
+    assert!(
+        output.status.success(),
+        "HTTP-date Retry-After was not honored: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(attempts).unwrap(), "2");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(2_500),
+        "HTTP-date retry happened before the server-specified delay"
+    );
+    assert_eq!(
+        fs::read(package_path(directory.path(), VALID_VERSION)).unwrap(),
+        SYNTHETIC_AR
+    );
+}
+
+#[test]
+fn ensure_falls_back_for_missing_or_malformed_retry_after() {
+    for header in ["", "not-an-http-date"] {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("fictional-source.deb");
+        fs::write(&source, SYNTHETIC_AR).unwrap();
+        let fake_bin = directory.path().join("fake-bin");
+        compile_fake_curl(&fake_bin);
+        let attempts = directory.path().join("curl-attempts");
+        let retry_marker = directory.path().join("fallback-retry-start");
+
+        let output = tool()
+            .args(["ensure", "--build-dir"])
+            .arg(directory.path())
+            .args(["--version", VALID_VERSION, "--sha256", &digest(SYNTHETIC_AR)])
+            .env("PATH", path_with(&fake_bin))
+            .env("SYNTHETIC_DEB", &source)
+            .env("SYNTHETIC_CURL_RETRY_AFTER", header)
+            .env("SYNTHETIC_CURL_ATTEMPT_MARKER", &attempts)
+            .env("SYNTHETIC_CURL_RETRY_MARKER", &retry_marker)
+            .output()
+            .expect("run uyou-deb ensure with malformed Retry-After");
+
+        assert!(
+            output.status.success(),
+            "Retry-After fallback failed for {header:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let attempt_count: usize = fs::read_to_string(&attempts)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            (2..=3).contains(&attempt_count),
+            "fallback retry count for {header:?}: {attempt_count}"
+        );
+        assert_eq!(
+            fs::read(package_path(directory.path(), VALID_VERSION)).unwrap(),
+            SYNTHETIC_AR
+        );
+    }
+}
+
 #[test]
 fn ensure_rejects_curl_older_than_header_capture_before_downloading() {
     let directory = tempfile::tempdir().unwrap();
