@@ -131,6 +131,8 @@ fn curl_command(url_environment: &str) -> Command {
             "--disable",
             "--fail",
             "--location",
+            "--max-redirs",
+            "0",
             "--silent",
             "--proto",
             "=https",
@@ -1256,6 +1258,12 @@ mod tests {
             .unwrap();
         assert_eq!(args[proto + 1], "=https");
         assert_eq!(args[redirect + 1], "=https");
+        let max_redirects = args
+            .iter()
+            .position(|argument| argument == "--max-redirs")
+            .unwrap();
+        assert!(args.iter().any(|argument| argument == "--location"));
+        assert_eq!(args[max_redirects + 1], "0", "never follow unvalidated redirect hosts");
         assert_eq!(args[timeout + 1], "600");
         assert_eq!(args[output + 1], "-");
         assert!(!args.iter().any(|argument| argument == "--url"));
