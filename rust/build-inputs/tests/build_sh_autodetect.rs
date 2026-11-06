@@ -3,10 +3,35 @@
 use std::{
     env, fs,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 use tempfile::TempDir;
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+
+const INFO_PLIST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleVersion</key><string>19.25.4</string></dict></plist>"#;
+
+fn write_ipa(path: &Path) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    let file = fs::File::create(path).unwrap();
+    let mut writer = ZipWriter::new(file);
+    writer
+        .start_file(
+            "Payload/YouTube.app/Info.plist",
+            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+        )
+        .unwrap();
+    writer.write_all(INFO_PLIST).unwrap();
+    writer.finish().unwrap();
+}
+
+fn write_app(path: &Path) {
+    fs::create_dir_all(path).unwrap();
+    fs::write(path.join("Info.plist"), INFO_PLIST).unwrap();
+}
 
 struct Fixture {
     _temp: TempDir,
@@ -89,6 +114,7 @@ fn main() {
             .current_dir(&self.root)
             .env("PATH", path)
             .env("MAKE_LOG", &self.make_log)
+            .env("UYOUPLUS_BUILD_BIN", env!("CARGO_BIN_EXE_uyouplus-inputs"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -111,7 +137,7 @@ fn main() {
 fn discovers_a_root_level_app_directory_without_newline_splitting() {
     let fixture = Fixture::new();
     let app = fixture.root.join("YouTube App\nOriginal.app");
-    fs::create_dir(&app).unwrap();
+    write_app(&app);
 
     let _output = fixture.run();
 
@@ -126,7 +152,7 @@ fn discovers_a_root_level_app_directory_without_newline_splitting() {
 #[test]
 fn discovers_a_root_level_regular_ipa_file() {
     let fixture = Fixture::new();
-    fs::write(fixture.root.join("YouTube.ipa"), b"synthetic").unwrap();
+    write_ipa(&fixture.root.join("YouTube.ipa"));
 
     let _output = fixture.run();
 
@@ -153,8 +179,8 @@ fn rejects_an_empty_root_without_invoking_make() {
 #[test]
 fn treats_regular_ipa_and_app_directory_as_two_candidates() {
     let fixture = Fixture::new();
-    fs::write(fixture.root.join("YouTube.ipa"), b"synthetic").unwrap();
-    fs::create_dir(fixture.root.join("YouTube.app")).unwrap();
+    write_ipa(&fixture.root.join("YouTube.ipa"));
+    write_app(&fixture.root.join("YouTube.app"));
 
     let output = fixture.run();
 
@@ -211,14 +237,17 @@ fn ignores_ipa_directories_and_app_regular_files() {
 #[test]
 fn explicit_operator_path_does_not_require_the_discovery_helper() {
     let fixture = Fixture::new();
+    let operator_input = fixture.root.join("operator path with spaces/YouTube.ipa");
+    write_ipa(&operator_input);
+    let operator_input = operator_input.to_string_lossy();
     let _output = fixture.run_with_input(
-        b"/operator/path with spaces/YouTube.ipa\n",
+        format!("{operator_input}\n").as_bytes(),
         Some("/missing/uyouplus-inputs-helper"),
     );
 
     assert_eq!(
         fixture.invoked_ipa().as_deref(),
-        Some(&b"/operator/path with spaces/YouTube.ipa"[..])
+        Some(operator_input.as_bytes())
     );
 }
 

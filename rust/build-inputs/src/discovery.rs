@@ -46,8 +46,12 @@ fn find_root_input(root: &Path) -> Result<PathBuf, String> {
     selected.ok_or_else(|| "No root-level regular .ipa file or .app directory found".to_owned())
 }
 
+pub fn discover_current_directory_root_input() -> Result<PathBuf, String> {
+    find_root_input(Path::new("."))
+}
+
 pub fn write_root_input() -> Result<(), String> {
-    let path = find_root_input(Path::new("."))?;
+    let path = discover_current_directory_root_input()?;
     let mut bytes = Vec::with_capacity(path.as_os_str().as_bytes().len() + 1);
     bytes.extend_from_slice(path.as_os_str().as_bytes());
     bytes.push(0);
