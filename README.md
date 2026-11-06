@@ -40,6 +40,8 @@
 
 ## Download
 
+> **Fork vs. upstream:** The release and download badges, AltStore links, installation and FAQ guides, and upstream issue links in this README refer to [`qnblackcat/uYouPlus`](https://github.com/qnblackcat/uYouPlus), not a build of this `Cucklord420/uYouPlus` fork. Downloading an upstream IPA does **not** install or verify fixes in this fork. This fork's optional manual build and draft-release workflow does not prove a fork-built IPA exists, has been tested, or may be redistributed. Verify the releasing repository and its source revision before attributing a downloaded artifact to this fork. Report fork-specific defects here only through an available channel; do not assume the upstream tracker covers fork changes.
+
 - The latest version of **uYouPlus** can be found under [Releases](https://github.com/qnblackcat/uYouPlus/releases/latest).
 - **Compatibility:** Requires iOS/iPadOS 14.0 or later.
 - For AltStore user: 
