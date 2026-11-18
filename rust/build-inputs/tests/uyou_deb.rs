@@ -447,7 +447,6 @@ fn ensure_honors_retry_after_before_retrying() {
     );
 }
 
-
 #[test]
 fn ensure_honors_http_date_retry_after_before_retrying() {
     let directory = tempfile::tempdir().unwrap();
@@ -457,15 +456,19 @@ fn ensure_honors_http_date_retry_after_before_retrying() {
     compile_fake_curl(&fake_bin);
     let attempts = directory.path().join("curl-attempts");
     let retry_marker = directory.path().join("http-date-retry-start");
-    let header = httpdate::fmt_http_date(
-        std::time::SystemTime::now() + std::time::Duration::from_secs(4),
-    );
+    let header =
+        httpdate::fmt_http_date(std::time::SystemTime::now() + std::time::Duration::from_secs(4));
 
     let started = std::time::Instant::now();
     let output = tool()
         .args(["ensure", "--build-dir"])
         .arg(directory.path())
-        .args(["--version", VALID_VERSION, "--sha256", &digest(SYNTHETIC_AR)])
+        .args([
+            "--version",
+            VALID_VERSION,
+            "--sha256",
+            &digest(SYNTHETIC_AR),
+        ])
         .env("PATH", path_with(&fake_bin))
         .env("SYNTHETIC_DEB", &source)
         .env("SYNTHETIC_CURL_RETRY_AFTER", &header)
@@ -504,7 +507,12 @@ fn ensure_falls_back_for_missing_or_malformed_retry_after() {
         let output = tool()
             .args(["ensure", "--build-dir"])
             .arg(directory.path())
-            .args(["--version", VALID_VERSION, "--sha256", &digest(SYNTHETIC_AR)])
+            .args([
+                "--version",
+                VALID_VERSION,
+                "--sha256",
+                &digest(SYNTHETIC_AR),
+            ])
             .env("PATH", path_with(&fake_bin))
             .env("SYNTHETIC_DEB", &source)
             .env("SYNTHETIC_CURL_RETRY_AFTER", header)
@@ -518,10 +526,7 @@ fn ensure_falls_back_for_missing_or_malformed_retry_after() {
             "Retry-After fallback failed for {header:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let attempt_count: usize = fs::read_to_string(&attempts)
-            .unwrap()
-            .parse()
-            .unwrap();
+        let attempt_count: usize = fs::read_to_string(&attempts).unwrap().parse().unwrap();
         assert!(
             (2..=3).contains(&attempt_count),
             "fallback retry count for {header:?}: {attempt_count}"
