@@ -1077,6 +1077,13 @@ mod tests {
     }
 
     #[test]
+    fn rejects_malformed_info_plist() {
+        let (temp, sha) = fixture_with_manifest("<plist><dict>", &[]);
+        let error = verify(&temp.path().join("fixture.ipa"), &sha).unwrap_err();
+        assert!(!error.is_empty());
+    }
+
+    #[test]
     fn rejects_unsafe_paths_and_duplicates() {
         for name in [
             "../escape",
