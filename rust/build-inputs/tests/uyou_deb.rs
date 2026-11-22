@@ -330,7 +330,7 @@ fn ensure_rejects_a_symlinked_package_parent() {
 }
 
 #[test]
-fn ensure_downloads_only_verified_bytes_and_leaves_no_temporary_file() {
+fn ensure_disables_curl_config_and_downloads_only_verified_bytes() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("fictional-source.deb");
     fs::write(&source, SYNTHETIC_AR).unwrap();
@@ -995,7 +995,7 @@ fn jailbroken_make_path_needs_no_debian_digest_or_preflight_marker() {
 fn workflow_runs_rust_preflight_before_marking_the_make_invocation_validated() {
     let workflow = fs::read_to_string(repo_root().join(".github/workflows/buildapp.yml")).unwrap();
     let preflight = workflow
-        .find("cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb -- validate")
+        .find("cargo run --locked --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb -- validate")
         .expect("workflow Rust preflight");
     let make = workflow
         .find("UYOU_DEB_INPUTS_VALIDATED=1 make package")
@@ -1003,4 +1003,36 @@ fn workflow_runs_rust_preflight_before_marking_the_make_invocation_validated() {
     assert!(preflight < make, "Make is authorized before Rust preflight");
     assert!(workflow.contains("UYOU_DEB_SHA256: ${{ inputs.uyou_deb_sha256 }}"));
     assert!(workflow.contains("UYOU_VERSION: ${{ inputs.uyou_version }}"));
+}
+
+#[test]
+fn rust_build_commands_use_the_committed_cargo_lockfile() {
+    assert!(
+        repo_root().join("rust/build-inputs/Cargo.lock").is_file(),
+        "Rust input tools need a committed dependency lockfile"
+    );
+    let makefile = fs::read_to_string(repo_root().join("Makefile")).unwrap();
+    assert!(makefile.contains(
+        "UYOU_DEB_COMMAND ?= cargo run --locked --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb --"
+    ));
+
+    for path in [
+        ".github/workflows/buildapp.yml",
+        ".github/workflows/validate.yml",
+        ".github/workflows/verify-debian-ar.yml",
+    ] {
+        let workflow = fs::read_to_string(repo_root().join(path)).unwrap();
+        for line in workflow
+            .lines()
+            .filter(|line| line.contains("cargo ") && line.contains("rust/build-inputs/Cargo.toml"))
+            .filter(|line| !line.contains("cargo fmt"))
+        {
+            assert!(
+                line.contains("cargo run --locked")
+                    || line.contains("cargo test --locked")
+                    || line.contains("cargo clippy --locked"),
+                "Cargo command does not enforce Cargo.lock in {path}: {line}"
+            );
+        }
+    }
 }

@@ -26,7 +26,7 @@ For non-jailbroken builds, the Makefile will begin with a guard that refuses to 
 
 ```sh
 export UYOU_VERSION="${UYOU_VERSION:-3.0.3}"
-cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb -- validate &&
+cargo run --locked --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb -- validate &&
   UYOU_DEB_INPUTS_VALIDATED=1 ./build.sh
 ```
 
@@ -36,7 +36,7 @@ The guard and digest validation apply only when `JAILBROKEN` is not `1`. The exi
 
 Update `docs/UYOU_PACKAGE_INTEGRITY.md` to document the Rust entry points, the local version default and shared-environment invocation, while retaining the independent-digest warning. Existing Python tests for the pre-existing IPA-input behavior remain in place; the new Python uYou scripts and three uYou-specific Python test modules will be removed only after their behavior is covered by Rust tests.
 
-The existing crate uses edition 2021, has no `rust-toolchain.toml`, and has no `Cargo.lock` on the reviewed branch. The retry correction below adds the small Rust `httpdate` dependency to parse the standard HTTP date forms; it adds no lockfile.
+The existing crate uses edition 2021 and has no `rust-toolchain.toml`. At the time of this design, the reviewed branch had no `Cargo.lock`; the current PR follow-up adds `rust/build-inputs/Cargo.lock` and requires `--locked` for dependency-resolving build, test, and lint commands. The retry correction below adds the small Rust `httpdate` dependency to parse the standard HTTP date forms; the dependency is now recorded in that lockfile.
 
 **Retry-After preservation correction (2026-10-30).** Independent review found that replacing curl's built-in retries with Rust-owned retries also stopped honoring the server's `Retry-After` header. The Rust downloader now captures that header with curl's `%header{retry-after}` write-out variable (curl 7.84.0 or later), checks the installed version before starting a download, accepts delta-seconds and HTTP-date values through `httpdate`, waits up to a 600-second per-response limit, and fails rather than retrying early when a valid requested delay exceeds that limit. Missing or malformed values retain the 1-second then 2-second fallback. Curl stderr is drained fully while only a bounded prefix and tail are retained, so long diagnostics cannot block the transfer and final markers remain available. Offline regressions verify rejecting an unsupported curl before downloading and honoring a two-second server delay on attempt two.
 

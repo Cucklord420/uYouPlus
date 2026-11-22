@@ -52,7 +52,7 @@ REMOVE_EXTENSIONS = 1
 CODESIGN_IPA = 0
 
 UYOU_PATH = Tweaks/uYou
-UYOU_DEB_COMMAND ?= cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb --
+UYOU_DEB_COMMAND ?= cargo run --locked --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb --
 
 export UYOU_VERSION
 

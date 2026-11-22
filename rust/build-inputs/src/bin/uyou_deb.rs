@@ -269,7 +269,7 @@ fn parse_curl_version(output: &[u8]) -> Result<(u64, u64, u64)> {
 
 fn check_curl_version() -> Result<()> {
     let output = Command::new("curl")
-        .arg("--version")
+        .args(["--disable", "--version"])
         .output()
         .map_err(|error| format!("cannot inspect curl version: {error}"))?;
     if !output.status.success() {
@@ -293,6 +293,8 @@ impl CurlDownloader {
         let mut command = Command::new("curl");
         command
             .args([
+                // Keep user curlrc settings from overriding these transport limits.
+                "--disable",
                 "--fail",
                 "--location",
                 "--silent",

@@ -33,7 +33,11 @@ fn emit_http_status(args: &[String], status: u16, retry_after: Option<&str>) {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.len() == 1 && args[0] == "--version" {
+    if !args.first().is_some_and(|argument| argument == "--disable") {
+        eprintln!("curl configuration was not disabled first");
+        process::exit(97);
+    }
+    if args.len() == 2 && args[1] == "--version" {
         let version = env::var("SYNTHETIC_CURL_VERSION").unwrap_or_else(|_| "8.0.0".into());
         println!("curl {version} (synthetic)");
         println!("Protocols: https");

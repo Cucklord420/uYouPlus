@@ -24,4 +24,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Synthetic Debian ar extraction and Rust Makefile integration
-        run: cargo test --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb --test uyou_deb
+        run: cargo test --locked --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb --test uyou_deb
