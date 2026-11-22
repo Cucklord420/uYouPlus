@@ -1058,6 +1058,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_compressed_info_plist_above_safety_limit_before_parsing() {
+        const MAX_INFO_PLIST_BYTES: usize = 4 * 1024 * 1024;
+
+        let mut manifest = String::from(PLIST);
+        manifest.push_str(&" ".repeat(MAX_INFO_PLIST_BYTES + 1 - manifest.len()));
+        assert_eq!(manifest.len(), MAX_INFO_PLIST_BYTES + 1);
+
+        let (temp, sha) = fixture_with_manifest(&manifest, &[]);
+        let archive = temp.path().join("fixture.ipa");
+        assert!(
+            std::fs::metadata(&archive).unwrap().len() < 64 * 1024,
+            "the over-limit manifest fixture should remain small after compression"
+        );
+
+        let error = verify(&archive, &sha).unwrap_err();
+        assert!(error.contains("Info.plist exceeds safety limit"), "{error}");
+    }
+
+    #[test]
     fn rejects_unsafe_paths_and_duplicates() {
         for name in [
             "../escape",
