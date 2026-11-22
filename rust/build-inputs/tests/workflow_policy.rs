@@ -118,11 +118,16 @@ fn cargo_entry_points_require_locked_dependency_resolution() {
             let invocation = &trimmed[start..];
             let cargo_options = invocation.split(" -- ").next().unwrap_or(invocation);
             assert!(
-                cargo_options.split_ascii_whitespace().any(|arg| arg == "--locked"),
+                cargo_options
+                    .split_ascii_whitespace()
+                    .any(|arg| arg == "--locked"),
                 "{name} must use --locked: {trimmed}"
             );
         }
-        assert!(checked > 0, "{name} no longer has a tested Cargo entry point");
+        assert!(
+            checked > 0,
+            "{name} no longer has a tested Cargo entry point"
+        );
     }
 }
 

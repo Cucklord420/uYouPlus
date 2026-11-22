@@ -1263,7 +1263,11 @@ mod tests {
             .position(|argument| argument == "--max-redirs")
             .unwrap();
         assert!(args.iter().any(|argument| argument == "--location"));
-        assert_eq!(args[max_redirects + 1], "0", "never follow unvalidated redirect hosts");
+        assert_eq!(
+            args[max_redirects + 1],
+            "0",
+            "never follow unvalidated redirect hosts"
+        );
         assert_eq!(args[timeout + 1], "600");
         assert_eq!(args[output + 1], "-");
         assert!(!args.iter().any(|argument| argument == "--url"));
