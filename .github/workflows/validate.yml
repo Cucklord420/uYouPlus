@@ -19,15 +19,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run 37 offline input and workflow security regressions
+      - name: Run existing Python IPA and workflow regressions
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: Rust input validation and original Python differential tests
-        run: cargo test --manifest-path rust/build-inputs/Cargo.toml
+        run: cargo test --locked --manifest-path rust/build-inputs/Cargo.toml
       - name: Check Rust formatting
         run: cargo fmt --manifest-path rust/build-inputs/Cargo.toml -- --check
       - name: Check Rust Clippy warnings
-        run: cargo clippy --manifest-path rust/build-inputs/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --locked --manifest-path rust/build-inputs/Cargo.toml --all-targets -- -D warnings
       - name: Validate build shell syntax
         run: bash -n build.sh
 
@@ -56,4 +56,4 @@ jobs:
           /bin/bash --version | head -n 1
           /usr/bin/find . -maxdepth 1 -print0 > /dev/null
       - name: Run synthetic app discovery cases on system Bash
-        run: cargo test --manifest-path rust/build-inputs/Cargo.toml --test build_sh_autodetect
+        run: cargo test --locked --manifest-path rust/build-inputs/Cargo.toml --test build_sh_autodetect

@@ -21,6 +21,11 @@ on:
         default: ""
         required: true
         type: string
+      uyou_deb_sha256:
+        description: "Reviewed SHA-256 of the uYou Debian package; independently obtain before building"
+        default: ""
+        required: true
+        type: string
       bundle_id:
         description: "Modify the bundle ID. Not recommended"
         default: "com.google.ios.youtube"
@@ -61,7 +66,12 @@ jobs:
       - name: Run IPA validation unit tests
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Test Rust input validation against original Python cases
-        run: cargo test --manifest-path rust/build-inputs/Cargo.toml
+        run: cargo test --locked --manifest-path rust/build-inputs/Cargo.toml
+      - name: Require independently pinned uYou package digest
+        env:
+          UYOU_DEB_SHA256: ${{ inputs.uyou_deb_sha256 }}
+          UYOU_VERSION: ${{ inputs.uyou_version }}
+        run: cargo run --locked --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb -- validate
       - name: Validate operator-supplied build settings
         env:
           IPA_URL: ${{ inputs.decrypted_youtube_url }}
@@ -70,7 +80,7 @@ jobs:
           BUNDLE_ID: ${{ inputs.bundle_id }}
           APP_NAME: ${{ inputs.app_name }}
         run: |
-          cargo run --quiet --manifest-path rust/build-inputs/Cargo.toml -- inputs --url "$IPA_URL" --sha256 "$IPA_SHA256" --version "$UYOU_VERSION" --bundle "$BUNDLE_ID" --app "$APP_NAME"
+          cargo run --locked --quiet --manifest-path rust/build-inputs/Cargo.toml -- inputs --url "$IPA_URL" --sha256 "$IPA_SHA256" --version "$UYOU_VERSION" --bundle "$BUNDLE_ID" --app "$APP_NAME"
 
   build:
     needs: validate-inputs
@@ -167,7 +177,7 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' --retry 2 --max-time 600 --output main/YouTube.ipa "$YOUTUBE_URL"
-          youtube_version=$(cargo run --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- ipa --file main/YouTube.ipa --sha256 "$IPA_SHA256")
+          youtube_version=$(cargo run --locked --quiet --manifest-path main/rust/build-inputs/Cargo.toml --bin ipa -- ipa --file main/YouTube.ipa --sha256 "$IPA_SHA256")
           unzip -q main/YouTube.ipa -d main
           cd main
           sed -i '' "s#^YOUTUBE_VERSION = .*#YOUTUBE_VERSION = $youtube_version#" Makefile
@@ -178,10 +188,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p theos/lib/iphone/rootless
-          cd ${{ github.workspace }}/main
+          cd "${{ github.workspace }}/main"
+          cargo run --locked --quiet --manifest-path rust/build-inputs/Cargo.toml --bin uyou-deb -- validate
           sed -i '' "s#^BUNDLE_ID = .*#BUNDLE_ID = $BUNDLE_ID#" Makefile
           sed -i '' "s#^DISPLAY_NAME = .*#DISPLAY_NAME = $APP_NAME#" Makefile          
-          make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
+          UYOU_DEB_INPUTS_VALIDATED=1 make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
           shopt -s nullglob
           packages=(packages/*.ipa)
           test "${#packages[@]}" -eq 1 || { echo 'Expected exactly one built IPA'; exit 1; }
@@ -192,6 +203,7 @@ jobs:
         env:
           THEOS: ${{ github.workspace }}/theos
           UYOU_VERSION: ${{ inputs.uyou_version }}
+          UYOU_DEB_SHA256: ${{ inputs.uyou_deb_sha256 }}
           BUNDLE_ID: ${{ inputs.bundle_id }}
           APP_NAME: ${{ inputs.app_name }}
 
